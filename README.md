@@ -14,7 +14,7 @@ DNA methylation samples from both FHS and ADNI were measured using the same Illu
 | File and folder                                              | Description                                       |
 | ------------------------------------------------------------ | ------------------------------------------------- |
 | [code/ADNI/preprocessing](https://github.com/TransBioInfoLab/blood-dnam-and-incident-dementia/blob/main/code/ADNI/preprocessing) | Code for preprocessing of ADNI DNAm blood samples |
-| [Code/Framingham/preprocessing](https://github.com/TransBioInfoLab/blood-dnam-and-incident-dementia/blob/main/code/Framingham/preprocessing) | Code for preprocessing of FHS9 DNAm blood samples |
+| [code/Framingham/preprocessing](https://github.com/TransBioInfoLab/blood-dnam-and-incident-dementia/blob/main/code/Framingham/preprocessing) | Code for preprocessing of FHS9 DNAm blood samples |
 ### 2. Association of DNA methylation at individual CpGs with dementia
 
 To evaluate the relationship between incident dementia and DNA methylation, we conducted Cox proportional regression analyses on both FHS and ADNI datasets separately, via the coxph function in the survival R package.  
