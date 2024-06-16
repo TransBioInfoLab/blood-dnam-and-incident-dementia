@@ -1,0 +1,920 @@
+---
+title: "Blood DNA Methylation Signature for Incident Dementia: Evidence from Longitudinal Cohorts"
+subtitle: "Data Preprocessing: FHS Exam 9 Offspring"
+author: 
+  - Wei Zhang^[University of Miami]
+  - Lily Wang^[University of Miami]
+date: "`r Sys.Date()`"
+output:
+  rmarkdown::html_document:
+    highlight: pygments
+    theme: yeti
+    toc: true
+    number_sections: true
+    df_print: paged
+    code_download: false
+    toc_float:
+      collapsed: yes
+    toc_depth: 3
+editor_options:
+  chunk_output_type: inline    
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, eval = F)
+cohort <- "Framingham"
+dir.base <- "../../.."
+dir.data <- file.path(dir.base,"../DATASETS/", cohort)
+dir.data.raw <- file.path(dir.data, "DNAm/raw/EPIC") 
+dir.data.processed <- file.path(dir.data, "DNAm/processed/EPIC") 
+dir.data.pca <- file.path(dir.data, "DNAm/pca_filtering/EPIC") 
+dir.data.pheno.raw <- file.path(dir.data, "Phenotype/raw/")
+dir.data.clinical <- file.path(dir.data, "Phenotype/processed/EPIC")
+for(p in grep("dir",ls(),value = T)) dir.create(get(p),recursive = TRUE,showWarnings = FALSE)
+
+# Loading required packages
+library(data.table)
+library(tidyverse)
+library(SummarizedExperiment)
+library(ExperimentHub)
+library(minfi)
+library(wateRmelon)
+library(DMRcate)
+library(readxl)
+library(RPMM)
+library(sm)
+library(EpiDISH)
+library(IlluminaHumanMethylationEPICanno.ilm10b4.hg19)
+library(S4Vectors)
+```
+
+```{r eval = T, message = F}
+# Load predefined functions
+source("../../utility/preprocessing.R")
+```
+
+# Prepare RGChannel set
+
+## Read idat file
+
+```{r}
+# read raw idat files
+RGSet <- read.metharray.exp(
+  base = file.path(dir.data.raw),
+  recursive = TRUE,
+  verbose = TRUE
+) 
+```
+
+## Read sample attributes
+
+```{r}
+pheno <- list.files(
+  path = file.path(dir.data.raw, "sample_info/"),
+  pattern = "idat.*.gz",
+  full.names = T
+) %>% 
+  purrr::map(.,~fread(.,skip = 10)) %>%
+  Reduce(rbind,.)
+pheno$sample <- str_sub(pheno$Grn.idat, 1, 24)
+```
+
+```{r}
+RGSet <- RGSet[,pheno$sample]
+```
+
+```{r}
+# Add id and sex info
+## load subject id
+pheno_subject_id <- fread(
+    list.files(
+      path = file.path(dir.data.raw, "sample_info/"),
+      pattern = "Subject.MULTI.*.gz",
+      full.names = T
+    ), skip = 10
+  )
+## load sample id
+pheno_sample_id <- fread(
+    list.files(
+      path = file.path(dir.data.raw, "sample_info/"),
+      pattern = "Sample.MULTI.*.gz",
+      full.names = T
+    ), skip = 10
+  )
+## join id info
+pheno_id <- inner_join(pheno_subject_id,
+                       pheno_sample_id)
+pheno <- left_join(pheno, pheno_id)
+##add sex info
+pheno$sex <- ifelse(
+  pheno$SEX == 1, "MALE", "FEMALE"
+)
+```
+
+```{r}
+save(
+  RGSet, 
+  pheno,
+  file = paste0(dir.data.raw,"/RGSet.rda")
+)
+```
+
+# Sample QC
+
+```{r echo = F}
+load(paste0(dir.data.raw,"/RGSet.rda"))
+```
+
+## Add clinical information
+
+### Age info
+
+```{r}
+# Load age and visit information 
+sample_info <- list.files(
+  path = file.path(dir.data.raw, "sample_info/"),
+  pattern = "FHS_Methylation_Sample_Attributes.*txt.gz",
+  full.names = T
+) %>% 
+  purrr::map(.,~fread(.,skip = 10)) %>% 
+  Reduce(rbind,.)
+
+pheno_df <- left_join(
+  pheno,
+  sample_info
+)
+```
+
+```{r}
+# contains duplicate data
+any(duplicated(pheno_df$dbGaP_Subject_ID))
+unique(pheno_df$duplicates)
+```
+
+```{r}
+# Load age information 
+age_info <- list.files(
+  path = file.path(dir.data.pheno.raw, "Info/"),
+  pattern = "txt.gz",
+  full.names = T
+) %>% 
+  purrr::map(.,~fread(.,skip = 10)) %>% 
+  Reduce(rbind,.) 
+
+pheno_df$time_since_exam1 <- lapply(
+  pheno_df$dbGaP_Subject_ID,
+  FUN = function(i){
+    d <- paste0("date",
+               unique(pheno_df[pheno_df$dbGaP_Subject_ID == i,"Collection_visit"]))
+    if(d == "date1"){
+      return(0)
+    } else {
+      # Match time since exam 1 in age_info
+      p <- age_info %>% 
+        filter(dbGaP_Subject_ID == i) %>% 
+        pull(d)
+      if(length(p) < 1) p <- NA
+      return(p)
+    }
+  }
+) %>% unlist()
+
+pheno_df <- left_join(pheno_df,
+                      age_info %>% dplyr::select(dbGaP_Subject_ID, shareid, idtype))
+```
+
+### Plasma Biomarker
+
+```{r}
+# ABETA
+abeta <- list.files(
+  path = file.path(dir.data.pheno.raw, "CSF/"),
+  pattern = "bamyl.*txt.gz",
+  full.names = T
+) %>% 
+  purrr::map(.,~fread(.,skip = 10)) %>% 
+  Reduce(rbind,.) %>% 
+  # select amyloid 40 and amyloid 42
+  dplyr::select(c("dbGaP_Subject_ID", "shareid","amyloid40", "amyloid42"))
+
+# Merge abeta information
+pheno_df <- left_join(pheno_df, abeta) 
+sum(is.na(pheno_df$amyloid40)) #613
+sum(is.na(pheno_df$amyloid42)) #613
+```
+
+```{r}
+# TAU
+tau <- list.files(
+  path = file.path(dir.data.pheno.raw, "CSF/"),
+  pattern = "tau.*txt.gz",
+  full.names = T
+) %>% 
+  purrr::map(.,~fread(.,skip = 10)) %>% 
+  Reduce(rbind,.) %>% 
+  # select tau
+  dplyr::select(c("dbGaP_Subject_ID", "shareid", "TAU"))
+
+# Merge tau information
+pheno_df <- left_join(pheno_df, tau) 
+sum(is.na(pheno_df$TAU)) #36
+```
+
+### APOE
+
+```{r}
+# APOE4 
+apoe <- list.files(
+   path = file.path(dir.data.pheno.raw, "APOE/"),
+   pattern = "csv.gz",
+   full.names = T, recursive = T
+) %>% 
+  purrr::map(.,~fread(.)) %>% 
+  Reduce(rbind,.) %>% 
+  # Select 4 alleles: coding 44 is 2 alleles, coding 24/34 is 1 alleles, other coding is 0 alleles
+  mutate(APOE4 = ifelse(APOE == 44, 2, ifelse(APOE %in% c(24, 34), 1, 0))) %>%
+  dplyr::select(shareid, APOE, APOE4)
+
+# Merge apoe4 information
+pheno_df <- left_join(pheno_df, apoe) 
+sum(is.na(pheno_df$APOE4)) #150
+```
+
+### Smoking status info
+
+```{r}
+# Smoking
+smoking <- list.files(
+  path = file.path(dir.data.pheno.raw, "Smoking/"),
+  pattern = "txt.gz",
+  full.names = T
+) %>% 
+  purrr::map(.,~fread(.,skip = 10)) %>% 
+  Reduce(rbind,.)
+
+pheno_df$smoking_status <- lapply(
+  pheno_df$dbGaP_Subject_ID,
+  FUN = function(i){
+    p <- smoking %>% 
+      filter(dbGaP_Subject_ID == i) %>% 
+      pull(
+        paste0("STATUS",
+               unique(pheno_df[pheno_df$dbGaP_Subject_ID == i,"Collection_visit"]))
+    )
+    if(length(p) < 1) p <- NA
+    p
+  }
+) %>% unlist()
+```
+
+### Ethnicity info
+
+```{r}
+# Ethnicity
+eth <- list.files(
+  path = file.path(dir.data.pheno.raw, "Ethnicity/"),
+  pattern = "txt.gz",
+  full.names = T
+) %>% 
+  purrr::map(.,~fread(.,skip = 10)) %>% 
+  Reduce(rbind,.) %>% 
+  # select RACE_CODE
+  dplyr::select(c("dbGaP_Subject_ID", "shareid", "RACE_CODE")) 
+
+pheno_df <- left_join(pheno_df, eth)
+```
+
+### Education variables
+
+```{r}
+# Education levels
+edu <- list.files(
+  path = file.path(dir.data.pheno.raw, "Education/"),
+  pattern = "txt.gz",
+  full.names = T
+) %>% 
+  purrr::map(.,~fread(.,skip = 10)) %>% 
+  Reduce(rbind,.) %>% 
+  # edu level is categorical data
+  mutate(education_level = education) %>% 
+  dplyr::select(c("dbGaP_Subject_ID", "shareid", "education_level"))
+
+pheno_df <- left_join(pheno_df, edu)
+```
+
+```{r}
+# Education years (Only available in exam 2)
+exam2 <- list.files(
+  path = file.path(dir.data.pheno.raw, "Exam2/"),
+  pattern = "txt.gz",
+  full.names = T
+) %>% 
+  purrr::map(.,~fread(.,skip = 10)) %>% 
+  Reduce(rbind,.) %>%
+  # B43 is the education years
+  mutate(EDUC_YEAR = B43, .keep = "unused") %>% 
+  dplyr::select(c("dbGaP_Subject_ID", "shareid", "EDUC_YEAR"))
+
+pheno_df <- left_join(pheno_df, exam2)
+```
+
+### Dementia info
+
+```{r}
+# Load dementia survival information
+Dementia_info <- list.files(
+  path = file.path(dir.data.pheno.raw, "Dementia/"),
+  pattern = "demsurv.*txt.gz",
+  full.names = T
+) %>% 
+  purrr::map(.,~fread(.,skip = 10)) %>% 
+  Reduce(rbind,.) %>% 
+  dplyr::select(-c("idtype")) 
+
+pheno_df <- left_join(pheno_df, Dementia_info)
+sum(is.na(pheno_df$DEM_STATUS))
+```
+
+```{r}
+# Calculate follow up years  
+# (days dementia occured since exam 1  - days since exam 1)/365
+pheno_df$dem_followup_year <- round((pheno_df$DEM_SURVDATE - pheno_df$time_since_exam1)/365)
+pheno_df$dem_followup_time <- pheno_df$DEM_SURVDATE - pheno_df$time_since_exam1
+
+# Create variable for dementia status at DNAm visit
+pheno_df <- pheno_df %>% 
+  mutate(
+    # Create a variable that record the dementia status at DNAm visit with following criteria
+    dem_ad_status_before_visit = case_when(
+      is.na(pheno_df$DEM_STATUS) ~ NA, # NAs remain NAs
+      # Dementia or AD status established (=1) and follow up years < 0 code as 1
+      (pheno_df$DEM_STATUS == 1|pheno_df$AD_STATUS == 1) & 
+        pheno_df$dem_followup_time <= 0 ~ 1 , 
+      TRUE ~ 0  # If not matched with the criteria above, code as 0
+    )
+  )
+```
+
+### MMSE
+
+```{r}
+# MMSE
+mmse <- list.files(
+  path = file.path(dir.data.pheno.raw, "MMSE/"),
+  pattern = "txt.gz",
+  full.names = T
+) %>% 
+  purrr::map(.,~fread(.,skip = 10)) %>% 
+  Reduce(rbind,.) %>% 
+  # cogscr is MMSE
+  mutate(MMSE = cogscr, 
+         Collection_visit = exam,
+         .keep = "unused") %>% 
+  dplyr::select(c("dbGaP_Subject_ID", "shareid", "Collection_visit", "MMSE"))
+
+pheno_df <- left_join(pheno_df, mmse)
+sum(pheno_df$MMSE <= 24, na.rm = T) #56 samples have smaller than 24 MMSE 
+```
+
+## Select Offspring cohort only
+
+```{r}
+pheno_os <- pheno_df %>% 
+  filter(idtype == 1)
+RGSet_offspring <- RGSet[,pheno_os$sample]
+```
+
+```{r}
+save(
+  RGSet_offspring,
+  pheno_os,
+  file = file.path(dir.data.processed, "FHS_Offspring_EPIC_RGSet.rda")
+)
+```
+
+## Remove bisulfiteConversion < 85
+
+```{r}
+load(
+  file.path(dir.data.processed, "FHS_Offspring_EPIC_RGSet.rda")
+)
+```
+
+```{r}
+# Calculate sample bisulfiteConversion and filter out bs < 85
+bs_out <- samples_filter_bs(
+  RGSet = RGSet_offspring,
+  threshold = 85, # any bs < 85 will filter out
+  save = T,
+  dir_save = dir.data.processed
+)
+```
+
+```{r}
+rm(RGSet)
+rm(RGSet_offspring)
+gc()
+```
+
+```{r}
+# Number of samples before bs filter
+nb_samples_before_bs_filtered <- nrow(pheno_os) # 1253
+# Number of samples after bs filter
+print(nb_samples_after_bs_filtered) # 1252, this is assigned by function samples_filter_bs
+# Merge bs to pheno data
+RGSet_filtered <- bs_out$RGSet
+pheno_os <- inner_join(pheno_os, bs_out$bs %>% rownames_to_column("sample"))
+pheno_os <- pheno_os[match(colnames(RGSet_filtered),pheno_os$sample),]
+```
+
+## Check Duplicated Samples
+
+```{r}
+any(duplicated(pheno_os$dbGaP_Subject_ID)) # FALSE
+```
+
+## Check unmatch sex
+
+```{r}
+# Use minfi package to check gender
+# Return will be the RGSet after rm the samples with unmatched sex 
+out <- samples_filter_sex(
+  object = RGSet_filtered,
+  sex_col = "sex", 
+  clinical_df = pheno_os,
+  package = "minfi", 
+  check_samples = T,
+  verbose = T
+) # No removed samples
+print(nb_samples_um_sex) # this is assigned by function samples_filter_sex
+```
+
+```{r}
+rm(out)
+gc()
+```
+
+# Probes QC
+
+1. select detection P<0.01 in > 90% samples
+2. keep only probes that start with "cg"
+3. drop probes that are on X/Y
+4. drop probes where SNP with MAF >= 0.01 was present in the last 5 bp of the probe.
+
+```{r}
+nb_probes_before_norm <- nrow(getBeta(RGSet_filtered)) # 866091
+```
+
+```{r}
+# Calculate detection P
+# Filter by P < 0.01 in >= 90% samples
+out <- probes_filter_p(
+  RGSet = RGSet_filtered,
+  p_thres = 0.01, # detP < 0.01
+  sample_prop = 0.9, # in > 90% samples
+  return_beta = T, 
+  save = T, 
+  dir_save = dir.data.processed
+)
+beta <- out$beta
+nb_probes_after_p <- nrow(beta) # 864323
+```
+
+```{r check_probes_SNP, eval = F, echo = F}
+load(
+  file.path(dir.data.processed, "FHS_Offspring_EPIC_RGSet.rda")
+)
+load(file.path(dir.data.processed, "detectionP_passed_probes.rda"))
+beta <- getBeta(RGSet_offspring)
+beta <- beta[passedProbes,]
+nb <- nrow(beta)
+
+## Remove noncg
+out <- probes_filter_SNP(
+  object = beta,
+  rmNonCG = T, # remove non-cg
+  rmSNP = F, # remove SNP
+  rmcrosshyb = F, # remove cross-reactive
+  rmXY = F, # remove XY
+  check_probes = F,
+  save = F
+)
+nb_rmncg <- nrow(out)
+
+## Remove SNP
+out <- probes_filter_SNP(
+  object = beta,
+  rmNonCG = T, # remove non-cg
+  rmSNP = T, # remove SNP
+  rmcrosshyb = F, # remove cross-reactive
+  rmXY = F, # remove XY
+  check_probes = F,
+  save = F
+)
+nb_rmSNP <- nrow(out)
+
+## Remove cross-reactive
+out <- probes_filter_SNP(
+  object = beta,
+  rmNonCG = T, # remove non-cg
+  rmSNP = T, # remove SNP
+  rmcrosshyb = T, # remove cross-reactive
+  rmXY = F, # remove XY
+  check_probes = F,
+  save = F
+)
+nb_rmCR <- nrow(out)
+
+## Remove XY
+out <- probes_filter_SNP(
+  object = beta,
+  rmNonCG = T, # remove non-cg
+  rmSNP = T, # remove SNP
+  rmcrosshyb = T, # remove cross-reactive
+  rmXY = T, # remove XY
+  check_probes = F,
+  save = F
+)
+nb_rmXY <- nrow(out)
+
+data.frame(
+  Description = c(
+    "Probes remain after depP",
+    "Probes remain after non-cg",
+    "Probes remain after SNP",
+    "Probes remain after cross-reative probes",
+    "Probes remain after X/Y probes"
+  ),
+  "Number" = c(
+    nb, nb_rmncg, nb_rmSNP, nb_rmCR, nb_rmXY
+  )
+)
+```
+
+```{r}
+# Filter probes by non-cg, SNP with MAF >= 0.01 was present in the last 5 bp of the probe and XY probes
+out <- probes_filter_SNP(
+  object = beta,
+  rmNonCG = T, # remove non-cg
+  rmcrosshyb = T, # remove cross-reactive
+  rmXY = T, # remove XY
+  dist = 5, mafcut = 0.01, and = T, # remove SNP parameters in function rmSNPandCH
+  check_probes = T,
+  save = T,
+  dir_save = dir.data.processed
+)
+betaSet <- out$beta
+nb_probes_after_SNP <- out$num_probes
+```
+
+# Dasen normalization
+
+```{r}
+# Create MethySet
+MSet <- convert_MethylSet(
+  RGSet = RGSet_filtered,
+  probes_keep = rownames(betaSet), # keep the filtered probes only 
+  save = T,
+  dir_save = dir.data.processed
+)
+```
+
+```{r}
+norm_set <- methyl_norm(
+    object = MSet, 
+    method = "dasen",
+    save = T, 
+    dir_save = dir.data.processed,
+    parallel = T,
+    array = "EPIC"
+  )
+```
+
+# Celltype estimation
+
+```{r}
+# Get beta matrix from MethylSet
+beta <- getBeta(norm_set)
+```
+
+```{r}
+data(centDHSbloodDMC.m)
+BloodFrac.m <- epidish(beta.m = beta, ref.m = centDHSbloodDMC.m, method = "RPC")$estF
+```
+
+```{r}
+# Add blood type information
+BloodFrac.m <- data.frame(BloodFrac.m)
+BloodFrac.m$sample <- rownames(BloodFrac.m)
+BloodFrac.m$Gran <- BloodFrac.m$Eosino + BloodFrac.m$Neutro
+pheno_os <- left_join(pheno_os, BloodFrac.m)
+```
+
+```{r}
+rm(RGSet_filtered)
+gc()
+```
+
+# SummarizedExperiment
+
+```{r}
+se <- convert_SE(
+    object = norm_set,
+    pheno_df = pheno_os,
+    array = "EPIC", 
+    genome = "hg19"
+  )
+```
+
+```{r}
+# Save Summarized Experiment 
+saveRDS(se, file = file.path(dir.data.processed,"Framingham_Offspring_EPIC_se.RDS"))
+write_csv(pheno_os %>% as.data.frame, 
+          file = file.path(dir.data.processed,"Framingham_Offspring_EPIC_Se_colData.csv"))
+```
+
+# Outliers detection - PCA analysis
+
+Description: 
+
+1. Estimate standard deviation for each probe
+2. Select most variable probes (e.g. n = 50,000)
+3. PCA plot
+4. Filter outliers
+
+## Run PCA
+
+```{r}
+pc_obj <- samples_filter_pca(
+  se, 
+  save = T,
+  dir_save = dir.data.pca
+)
+pca <- pc_obj$pca
+framingham.se <- pc_obj$SE
+```
+
+## PCA plot
+
+```{R pca_plot, eval = TRUE, warning = F}
+# Load PCA results
+pca <- readRDS(file.path(dir.data.pca,"PCA_model_usingBetas.RDS"))
+pheno_os <- read_csv(
+  file.path(dir.data.processed,"Framingham_Offspring_EPIC_Se_colData.csv"))
+```
+
+```{r, eval = TRUE, warning = F}
+byStatus <- plotPCA(
+  pca = pca,
+  dataset = "Framingham: beta values",
+  pheno = pheno_os,
+  group_char = "DEM_STATUS",
+  ntop = 50000
+)
+bySex <- plotPCA(
+  pca = pca,
+  dataset = "ADNI: beta values",
+  pheno = pheno_os,
+  group_char = "sex",
+  ntop = 50000
+)
+byPLATE <- plotPCA(
+  pca = pca,
+  dataset = "ADNI: beta values",
+  pheno = pheno_os,
+  group_char = "Sample_container_ID",
+  ntop = 50000
+)
+```
+
+```{r}
+print(nb_samples_after_pca) # 1236, obtained from function samples_filter_pca
+pheno_filtered <- pheno_os[match(colnames(framingham.se), pheno_os$sample),]
+write_csv(
+  pheno_filtered,
+  file.path(dir.data.pca,"Framingham_Offspring_EPIC_colData_PCfiltered.csv")
+)
+```
+
+# Exclude Samples
+
+## Exclude Dementia Status at Baseline
+
+```{r message = F}
+# Load se after PC filtered 
+framingham.se <- readRDS(file.path(dir.data.pca, "SummarizedExperiment_PCfiltered.RDS"))
+```
+
+```{r}
+framingham.se <- framingham.se[,framingham.se$dem_ad_status_before_visit %in% 0 & framingham.se$dem_followup_time > 0]
+nb_samples_after_rm_dem <- ncol(framingham.se) # 926
+table(framingham.se$DEM_STATUS)
+#   0   1 
+# 884  42 
+```
+
+## Exclude Non-white Samples
+
+```{r}
+# Re-code race
+framingham.se$RACE <- ifelse(is.na(framingham.se$RACE_CODE), NA, ifelse(
+    framingham.se$RACE_CODE %in% c("W", "EW"), "White", "Non White")
+  )
+framingham.se <- framingham.se[,framingham.se$RACE == "White"]
+nb_samples_after_rm_nw <- ncol(framingham.se) # 907
+```
+
+```{r}
+table(framingham.se$DEM_STATUS)
+#   0   1 
+# 865  42 
+table(framingham.se$sex)
+# FEMALE   MALE 
+#    496    411 
+```
+
+## Add pedigree information
+
+```{r}
+pedigree <- list.files(
+  path = file.path(dir.data.pheno.raw, "Pedigree/"),
+  pattern = ".*txt.gz",
+  full.names = T
+) %>% 
+  purrr::map(.,~fread(.,skip = 10)) %>% 
+  Reduce(rbind,.) %>% 
+  filter(idtype == 1) %>%
+  dplyr::select(-c("idtype", "sex", "shareid"))
+
+pheno_df <- colData(framingham.se) %>% data.frame()
+pheno_df <- left_join(pheno_df, pedigree)
+
+# Save clinical file
+write_csv(
+  pheno_df,
+  file.path(dir.data.clinical, "FHS_OffSpring_EPIC_rm_dem_nonwhite_clinical_data.csv")
+)
+```
+
+```{r}
+colData(framingham.se) <- DataFrame(pheno_df)
+saveRDS(
+  framingham.se,
+  file.path(dir.data.processed, "FHS_OffSpring_EPIC_rm_dem_nw_se.RDS")
+)
+```
+
+# Summary
+
+```{R, echo=FALSE}
+df.samples <- data.frame(
+  `Number of samples` =  c(
+    nb_samples_before_bs_filtered,
+    nb_samples_after_bs_filtered,
+    nb_samples_um_sex,
+    nb_samples_after_pca,
+    nb_samples_after_rm_dem,
+    nb_samples_after_rm_nw
+  ),
+  "Description" = c(
+    "Number of samples",
+    "Number of samples after filtering bisulfiteConversion >= 85",
+    "Number of samples after removing unmatched sex",
+    "Number of samples after PCA filtering",
+    "Number of samples after excluding DEM status at Baseline",
+    "Number of samples after excluding Non-white"
+  )
+)    
+df.samples 
+```
+
+```{R, echo=FALSE}
+df.probes <- data.frame(
+  "Number of probes" =  c(
+    nb_probes_before_norm, 
+    nb_probes_after_p,
+    nb_probes_after_SNP[1],
+    nb_probes_after_SNP[2]
+  ),
+  "Description" = c(
+    "Total number of probes in raw data",
+    "Probes with detection P < 0.01 select in > 90% samples",
+    "Probes that start with cg",
+    "Only probes that start with cg, no crosshyb, no X, no Y, mafcut = 0.01"
+  )
+)    
+df.probes 
+```
+
+```{r, echo = F}
+writexl::write_xlsx(
+  list(Samples = df.samples,
+       Probes = df.probes),
+  file.path(dir.data.processed, "Framingham_offspring_EPIC_number_of_samples_probes_at_each_step.xlsx")
+)
+```
+
+```{r eval = T, echo = F}
+df.samples <- readxl::read_xlsx(
+  file.path(dir.data.processed, "Framingham_offspring_EPIC_number_of_samples_probes_at_each_step.xlsx"),
+  sheet = 1
+)
+df.samples
+```
+
+```{r eval = T, echo = F}
+df.probes <- readxl::read_xlsx(
+  file.path(dir.data.processed, "Framingham_offspring_EPIC_number_of_samples_probes_at_each_step.xlsx"),
+  sheet = 2
+)
+df.probes
+```
+
+# Checking the data
+
+```{R eval = T}
+framingham.se <- readRDS(file.path(dir.data.pca, "SummarizedExperiment_PCfiltered.RDS"))
+```
+
+## show probes not starting with cg are removed
+
+```{R check_cg, eval = T}
+grep("cg",rownames(framingham.se),invert = T)
+```
+
+## show probes on X/Y are removed
+
+```{R check_xy, eval = T}
+c("chrX", "chrY") %in% (seqnames(framingham.se) %>% as.character())
+```
+
+## show probes with SNP with MAF \>= 0.01 and in the last 5bp were removed (compared with DMRcateData package probes)
+
+```{R eval = T}
+eh <- ExperimentHub()
+snpsall <- eh[["EH3130"]]
+any(snpsall$probe[snpsall$mafs > 0.01 & snpsall$distances <= 5] %>% as.character() %in% rownames(framingham.se)) 
+crosshyb <- eh[["EH3129"]]
+any(crosshyb %in% rownames(framingham.se))
+XY.probes <- eh[["EH3131"]]
+any(XY.probes %in% rownames(framingham.se)) 
+```
+
+## show quantiles for each sample is the same
+
+```{R quantile_box_plot, eval = T}
+boxplot(assay(framingham.se[,1:10]))
+plyr::adply(assay(framingham.se[,1:10]),.margins = 2,.fun = function(x){quantile(x)})
+```
+
+## check cell type proportions adds up to 1
+
+```{R eval = T}
+table(rowSums(colData(framingham.se)[,c("B","NK","CD4T","CD8T","Mono","Neutro","Eosino")] %>% as.matrix()))
+```
+
+## check outliers samples are not in datset anymore
+
+```{R eval = T}
+outliers <- readr::read_csv(paste0(dir.data.pca, "/PCs_usingBetas.csv"),col_types = readr::cols()) %>%
+  dplyr::filter(outlier_PC1 == 1 | outlier_PC2 == 1) %>% pull(`...1`) 
+head(outliers)
+head(colnames(framingham.se))
+any(outliers %in% colnames(framingham.se))
+```
+
+# Batch effect correction with BEclear
+
+```{r}
+library(BEclear)
+source(file.path(dir.base, "code/utility/BE.R"))
+dir.results.batch <- file.path(dir.base, "analysis_results/BEclear")
+```
+
+```{r}
+# Load data
+framingham_se <- readRDS(
+  file.path(dir.data.processed, "FHS_OffSpring_EPIC_rm_dem_nw_se.RDS")
+)
+# Function rm_batch_BE load from BE.R
+rm_batch_BE(
+  se = framingham_se,
+  batch_var = "Sample_container_ID", 
+  sample_var = "sample", 
+  cores = 10, 
+  prefix = "FHS_EPIC", 
+  dir.data = dir.results.data, 
+  dir.results = dir.results.batch,
+)
+# All batches have BEscore < 0.02
+```
+
+# Session Information
+
+<details>
+  <summary>**Session Info**</summary>
+```{r eval = T}
+devtools::session_info()
+```
+</details>
+

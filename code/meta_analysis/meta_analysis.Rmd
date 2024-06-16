@@ -1,0 +1,156 @@
+---
+title: "Blood DNA Methylation Signature for Incident Dementia: Evidence from Longitudinal Cohorts"
+subtitle: "Meta analysis of FHS9 and ADNI"
+author: 
+  - Wei Zhang^[University of Miami]
+  - Lily Wang^[University of Miami]
+date: "`r Sys.Date()`"
+output:
+  rmarkdown::html_document:
+    highlight: pygments
+    theme: yeti
+    toc: true
+    number_sections: true
+    df_print: paged
+    code_download: false
+    toc_float:
+      collapsed: yes
+    toc_depth: 3
+editor_options:
+  chunk_output_type: inline    
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, eval = T)
+dir.base <- "../.."
+dir.results <- file.path(dir.base, "analysis_results")
+dir.results.meta <- file.path(dir.results, "meta_analysis")
+dir.data.aux <- file.path(dir.base, "../DATASETS/Aux_Sync/") 
+for(p in grep("dir.",ls(),value = T)) dir.create(get(p),recursive = TRUE,showWarnings = FALSE)
+library(SummarizedExperiment)
+library(tidyverse)
+library(meta)
+```
+
+```{r}
+source("../utility/meta.R")
+```
+
+# Load results from individual analysis
+
+```{r message = F}
+# FHS exam 9
+results_fhs9 <- read_csv(
+  file.path(dir.results, "Framingham/EPIC_EXAM9/Framingham_EPIC_beta_single_cpg_cox_all_celltypes_bacon_results.csv")
+)
+results_fhs9 <- results_fhs9 %>% 
+  mutate(study = "FHS",
+         study_id = "FHS9")
+# ADNI
+results_adni <- read_csv(
+  file.path(dir.results, "ADNI/cox/ADNI_adjust_celltypes_first_2pc_single_cpg_cox_bacon_correction.csv")
+)
+results_adni <- results_adni %>% 
+  mutate(study = "ADNI",
+         study_id = "ADNI")
+```
+
+# Meta analysis
+
+```{r echo = F, eval = F}
+# Create list for meta analysis
+results_list <- list(
+  FHS9 = results_fhs9,
+  ADNI = results_adni
+)
+# Function meta_wrapper load from meta.R
+results <- meta_wrapper(
+  results_list = results_list,
+  effect = "Estimate.bacon",
+  se = "StdErr.bacon",
+  sm = "HR"
+)
+# Save results
+write_csv(
+  results,
+  file.path(dir.results.meta,
+            "meta_analysis_FHS9_ADNI_results.csv")
+)
+```
+
+## Add anotation
+
+```{r message = F, echo=F}
+results <-  read_csv(
+  file.path(dir.results.meta, "meta_analysis_FHS9_ADNI_results.csv")
+)
+```
+
+```{r message = F}
+data <- readr::read_tsv(
+  file.path(dir.data.aux,"nasser_2021/AllPredictions.AvgHiC.ABC0.015.minus150.ForABCPaperV3.txt.gz")
+)
+CellType.selected <- readxl::read_xlsx(
+   file.path(dir.data.aux,"Nassser study selected biosamples.xlsx"),col_names = FALSE
+   ) %>% dplyr::pull(1)
+
+data.filtered <- data %>% dplyr::filter(CellType %in% CellType.selected) %>% 
+  dplyr::filter(!isSelfPromoter)  %>% 
+  dplyr::filter(class != "promoter")
+
+nasser.enhancer.gr <- data.filtered %>% makeGRangesFromDataFrame(
+  start.field = "start",
+  end.field = "end",
+  seqnames.field = "chr",
+  keep.extra.columns = TRUE
+)
+
+cpg.gr <- IlluminaHumanMethylationEPICanno.ilm10b4.hg19::Locations %>%
+  GenomicRanges::makeGRangesFromDataFrame(start.field = "pos",end.field = "pos")
+cpg.gr <- cpg.gr + 250
+cpg.gr$cpg <- rownames(IlluminaHumanMethylationEPICanno.ilm10b4.hg19::Locations)
+hits <- findOverlaps(cpg.gr,nasser.enhancer.gr) %>% as.data.frame()
+
+cpgs.ad.is.enahncer.nasser <- data.frame(
+  "Cpg" = cpg.gr[hits$queryHits,]$cpg,
+  "Cell_type" = nasser.enhancer.gr$CellType[hits$subjectHits]
+) %>% unique %>% dplyr::group_by(Cpg) %>% summarise("Cell_type" = paste(Cell_type,collapse = ";"))
+```
+
+```{r}
+load(file.path(dir.data.aux,"E073_15_coreMarks_segments.rda"))
+
+result.gr <- results %>% makeGRangesFromDataFrame(start.field = "start",end.field = "end",seqnames.field = "seqnames")
+hits <- findOverlaps(result.gr,ChmmModels.gr) %>% as.data.frame()
+hits$state <- ChmmModels.gr$state[hits$subjectHits]
+hits$cpg <- results$cpg[hits$queryHits]
+results$E073_15_coreMarks_segments_state <- hits$state[match(results$cpg,hits$cpg)]
+
+results$nasser_is_enahncer <- results$cpg %in% cpgs.ad.is.enahncer.nasser$Cpg
+results$nasser_enhancer_cell_type <- cpgs.ad.is.enahncer.nasser$Cell_type[match(results$cpg, cpgs.ad.is.enahncer.nasser$Cpg)]
+```
+
+```{r eval = F}
+write_csv(
+  results,
+  file.path(dir.results.meta, "meta_analysis_FHS9_ADNI_results_annotated.csv")
+)
+```
+
+```{r eval = F}
+write_csv(
+  results %>% filter(pVal.fixed < 1e-05& 
+               direction %in% c("++", "--") & 
+               ADNI_pValue.bacon < 0.05 & FHS9_pValue.bacon < 0.05),
+  file.path(dir.results.meta, "meta_analysis_FHS9_ADNI_sig_results_annotated.csv")
+)
+```
+
+# Session Information
+
+<details>
+  <summary>**Session Info**</summary>
+```{r session}
+sessionInfo()
+```
+</details>

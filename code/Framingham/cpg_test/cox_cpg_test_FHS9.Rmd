@@ -1,0 +1,190 @@
+---
+title: "Blood DNA Methylation Signature for Incident Dementia: Evidence from Longitudinal Cohorts"
+subtitle: "Cox Regression on Single CpGs --- FHS"
+author: 
+  - Wei Zhang^[University of Miami]
+  - Lily Wang^[University of Miami]
+date: "`r Sys.Date()`"
+output:
+  rmarkdown::html_document:
+    highlight: pygments
+    theme: yeti
+    toc: true
+    number_sections: true
+    df_print: paged
+    code_download: false
+    toc_float:
+      collapsed: yes
+    toc_depth: 3
+editor_options:
+  chunk_output_type: inline    
+---
+
+```{r setup, include=FALSE}
+# Initial settings
+knitr::opts_chunk$set(echo = TRUE, eval = T)
+
+# Create dir
+cohort <- "Framingham"
+dir.base <- "../../.."
+dir.data <- file.path(dir.base,"../DATASETS/", cohort)
+dir.data.raw <- file.path(dir.data, "DNAm/raw/EPIC") 
+dir.data.processed <- file.path(dir.data, "DNAm/processed/EPIC") 
+dir.data.aux <- file.path(dir.base,"../DATASETS/Aux_Sync/") 
+dir.results <- file.path(dir.base, "analysis_results", cohort, "EPIC_EXAM9")
+dir.results.data <- file.path(dir.base, "datasets", cohort) 
+dir.results.batch <- file.path(dir.base, "analysis_results/BEclear")
+for(p in grep("dir.",ls(),value = T)) dir.create(get(p),recursive = TRUE,showWarnings = FALSE)
+```
+
+```{r message = F}     
+source("../../utility/cpg_test.R")
+source("../../utility/annotation_and_bacon.R")
+```
+
+# Load data
+
+```{r}
+framingham_se <- readRDS(
+  file.path(dir.data.processed, "FHS_OffSpring_EPIC_rm_dem_nw_se.RDS")
+)
+celltype <- c("B", "NK", "CD4T", "Mono", "Gran")
+betaMat <- assay(framingham_se)
+pheno_df <- colData(framingham_se) %>% data.frame()
+pheno_df <- pheno_df %>% 
+  mutate(across(all_of(celltype), ~ .x*100))
+```
+
+# Check distribution
+
+```{r}
+# age
+mean(pheno_df$Age_at_collection)
+sd(pheno_df$Age_at_collection)
+# follow up time
+mean(pheno_df$dem_followup_time)/365
+sd(pheno_df$dem_followup_time)/365
+# sex
+pheno_df %>% 
+  summarise(n = n(), 
+            freq = n/nrow(pheno_df) * 100,
+            .by = sex)
+# education
+mean(pheno_df$EDUC_YEAR, na.rm = T)
+sd(pheno_df$EDUC_YEAR, na.rm = T)
+# smoking
+pheno_df %>% 
+  summarise(n = n(), 
+            freq = n/nrow(pheno_df) * 100,
+            .by = smoking_status)
+```
+
+# Analysis
+
+## Fit model 
+
+```{r eval = F}
+results <- cox_coef(
+  beta = betaMat,
+  pheno = pheno_df,
+  time_var = "dem_followup_time",
+  event_var = "DEM_STATUS",
+  adjust_var = c("Age_at_collection", "sex", celltype),
+  scale = T,
+  fdr_method = "fdr",
+  save = F
+)
+```
+
+```{r eval = F}
+write_csv(
+  results, 
+  file.path(dir.results, "Framingham_EPIC_beta_single_cpg_cox_all_celltypes_results.csv")
+)
+```
+
+## Add annotation
+
+```{r eval = F}
+library(IlluminaHumanMethylationEPICanno.ilm10b4.hg19)
+# Load from annotation_and_bacon.R
+results_anno <- annotate_results(results,
+                                 array = "EPIC",
+                                 dir.data.aux = dir.data.aux,
+                                 dir.save = dir.results,
+                                 prefix = "Framingham_EPIC_beta_single_cpg_cox_all_celltypes")
+```
+
+```{r}
+results_anno <- read_csv(
+  file.path(dir.results, "Framingham_EPIC_beta_single_cpg_cox_all_celltypes_annotated_results.csv")
+)
+```
+
+```{r}
+bacon_results <- bacon_adj(
+  results_anno,
+  est_var = "coef",
+  z_var = "z",
+  std_var = "se_coef"
+)
+```
+
+```{r}
+writexl::write_xlsx(
+  bacon_results$inflation.stat,
+  file.path(dir.results, "Framingham_EPIC_beta_single_cpg_cox_all_celltypes_inflation_stats.xlsx")
+)
+```
+
+```{r}
+write_csv(
+  bacon_results$data.with.inflation,
+  file.path(dir.results, "Framingham_EPIC_beta_single_cpg_cox_all_celltypes_bacon_results.csv")
+)
+```
+
+# Check with pedno
+
+```{r message = F}
+library(lme4)
+```
+
+```{r}
+bacon_results <- read_csv(
+  file.path(dir.results, "Framingham_EPIC_beta_single_cpg_cox_all_celltypes_bacon_results.csv")
+)
+bacon_results_sig <- bacon_results %>% 
+  filter(pValue.bacon < 1e-05)
+```
+
+```{r warning = F, message = F}
+betaMat <- assay(framingham_se)
+pheno <- colData(framingham_se) %>% data.frame()
+M <- minfi::logit2(betaMat)
+M <- M[bacon_results_sig$cpg,]
+
+results_mm <- plyr::adply(
+    M,
+    1,
+    .fun = function(mvalue){
+      mod = lmer(mvalue ~ (1|pedno), data.frame(mvalue = mvalue, pheno))
+      vc <- VarCorr(mod) %>% as.data.frame()
+      data.frame(ICC = vc$vcov[1]/(vc$vcov[1] + vc$vcov[2]))
+    },.id = "cpg"
+)
+
+write_csv(
+  results_mm,
+  file.path(dir.results, "ICC_pedno_cpg_1e05.csv")
+)
+```
+
+# Session Information
+
+<details>
+  <summary>**Session Info**</summary>
+```{r session}
+sessionInfo()
+```
+</details>

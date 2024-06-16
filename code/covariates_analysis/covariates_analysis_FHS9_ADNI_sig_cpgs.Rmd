@@ -1,0 +1,340 @@
+---
+title: "Blood DNA Methylation Signature for Incident Dementia: Evidence from Longitudinal Cohorts"
+subtitle: "Covariates analysis"
+author: 
+  - Wei Zhang^[University of Miami]
+  - Lily Wang^[University of Miami]
+date: "`r Sys.Date()`"
+output:
+  rmarkdown::html_document:
+    highlight: pygments
+    theme: yeti
+    toc: true
+    number_sections: true
+    df_print: paged
+    code_download: false
+    toc_float:
+      collapsed: yes
+    toc_depth: 3
+editor_options:
+  chunk_output_type: inline    
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+# Create dir
+cohort <- "Framingham"
+dir.base <- "../.."
+dir.data <- file.path(dir.base, "../DATASETS", cohort) 
+dir.data.raw <- file.path(dir.data, "DNAm/raw/EPIC") 
+dir.data.processed <- file.path(dir.data, "DNAm/processed/EPIC") 
+dir.data.aux <- file.path(dir.base,"../DATASETS/Aux_Sync/") 
+dir.data.pheno.raw <- file.path(dir.data, "Phenotype/raw/")
+dir.data.clinical <- file.path(dir.data, "Phenotype/processed/EPIC")
+dir.results <- file.path(dir.base, "analysis_results", cohort, "covariates_analysis")
+dir.results.meta <- file.path(dir.base, "analysis_results/meta_analysis")
+dir.results.combp <- file.path(dir.base, "analysis_results/combp")
+for(p in grep("dir.",ls(),value = T)) dir.create(get(p),recursive = TRUE,showWarnings = FALSE)
+```
+
+# Auxillary function
+
+```{r message = F}
+source(file.path(dir.base, "/code/utility/cpg_test.R"))
+source(file.path(dir.base, "/code/utility/annotation_and_bacon.R"))
+library(SummarizedExperiment)
+library(data.table)
+```
+
+# Load data
+
+```{r}
+framingham_se <- readRDS(
+  file.path(dir.data.processed, "FHS_OffSpring_EPIC_rm_dem_nw_se.RDS")
+)
+beta <- assay(framingham_se)
+pheno <- colData(framingham_se) %>% data.frame()
+```
+
+## BMI
+
+```{r}
+# Education levels
+risk <- list.files(
+  path = file.path(dir.data.pheno.raw, "Risk_factors/"),
+  pattern = "txt.gz",
+  full.names = T
+) %>% 
+  purrr::map(.,~fread(.,skip = 10)) %>% 
+  Reduce(rbind,.) %>% 
+  # select BMI9
+  dplyr::select(c("dbGaP_Subject_ID", "shareid", "BMI9", "BG9", "DMRX9", "HRX9"))
+
+pheno_df <- left_join(pheno, risk)
+```
+
+```{r}
+write_csv(
+  pheno_df,
+  file.path(dir.data.clinical, "FHS_Offspring_EPIC_EXAM9_with_risk_factor.csv")
+)
+```
+
+## Load meta analysis results
+
+```{r message = F}
+results_meta <- read_csv(
+  file.path(dir.results.meta,
+            "meta_analysis_FHS9_ADNI_results.csv")
+)
+```
+
+```{r}
+results_sig <- results_meta %>%
+  filter(pVal.fixed < 1e-05 & 
+           direction %in% c("++", "--") & 
+           ADNI_pValue.bacon < 0.05 & FHS9_pValue.bacon < 0.05)
+```
+
+## Load DMR results
+
+```{r message = F}
+sig.dmr <- read_csv(
+  file.path(dir.results.combp, "combp_FHS9_ADNI_results_annotated.csv")
+) %>% 
+  filter(z_sidak_p < 0.05 & z_p < 1E-05 & pct_direction %in% c(0,1) & n_probes >= 3) 
+sig.dmr <- str_split(sig.dmr$cpgs_in_region, ",") %>% unlist() ## 233
+```
+
+# Analysis
+
+```{r}
+covariates <- c("APOE4", "smoking_status", "education_level", "EDUC_YEAR", "MMSE", "BMI9", "BG9", "DMRX9", "HRX9")
+celltype <- c("B", "NK", "CD4T", "Mono", "Gran")
+pheno_df$smoking_status <- as.factor(pheno_df$smoking_status)
+pheno_df$education_level <- as.factor(pheno_df$education_level)
+pheno_df$DMRX9 <- as.factor(pheno_df$DMRX9)
+pheno_df$HRX9 <- as.factor(pheno_df$HRX9)
+doParallel::registerDoParallel(20)
+results_ls <- plyr::llply(
+  covariates,
+  .fun = function(v) {
+    res <- plyr::ldply(
+      unique(c(results_sig$cpg,sig.dmr)),
+      .fun = function(cpg){
+        b <- beta[cpg,]
+        res <- get_multi_coef(
+          cpg = b,
+          pheno = pheno_df,
+          test_var = v,
+          adjust_var = c("Age_at_collection", "sex", celltype)
+        )
+        if(all(cpg %in% results_sig$cpg, cpg %in% sig.dmr)) {
+          res$source <- "CpG in meta analysis and DMR"
+        } else if(!cpg %in% results_sig$cpg) {
+          res$source <- "CpG in DMR"
+        } else {
+          res$source <- "CpG in meta analysis"
+        }
+        res
+      }, .parallel = T
+    )
+    res <- res %>% mutate(cpg = unique(c(results_sig$cpg,sig.dmr)), .before = 1)
+    res
+  }
+)
+names(results_ls) <- covariates
+```
+
+```{r eval = F}
+writexl::write_xlsx(
+  results_ls,
+  file.path(dir.results, "FHS9_covariates_results.xlsx")
+)
+```
+
+## Add annotation
+
+```{r}
+library(IlluminaHumanMethylationEPICanno.ilm10b4.hg19)
+results_anno <- results_ls %>% 
+  purrr::map(., ~annotate_results(.,
+                                  array = "EPIC",
+                                  dir.data.aux = dir.data.aux,
+                                  save = F))
+```
+
+```{r eval = F}
+writexl::write_xlsx(
+  results_anno,
+  file.path(dir.results, "FHS9_covariates_results_annotated.xlsx")
+)
+```
+
+## Make summary table
+
+```{r}
+results_ls <- purrr::map(covariates, ~{
+  readxl::read_xlsx(
+    file.path(dir.results, "FHS9_covariates_results.xlsx"),
+    sheet = .
+  )
+})
+names(results_ls) <- covariates
+
+results_anno <- purrr::map(covariates, ~{
+  readxl::read_xlsx(
+    file.path(dir.results, "FHS9_covariates_results_annotated.xlsx"),
+    sheet = .
+  )
+})
+names(results_anno) <- covariates
+```
+
+```{r}
+cpg <- unique(c(results_sig$cpg, sig.dmr))
+results_ls <- results_ls %>% purrr::map(., ~{
+  .[,grep("cpg|source|p", colnames(.))]
+})
+results_ls <- results_ls[-3]
+table <- plyr::join_all(results_ls, by=c("cpg", "source"), type='left') 
+table[,c(2,3)] <- table[,c(3,2)]
+colnames(table)[2:3] <- c("source", "APOE4_p")
+colnames(table) <- gsub("_p","",colnames(table))
+table <- table %>% 
+  mutate_if(is.numeric, list(~ifelse(. >= 0.05, NA, .))) %>%
+  mutate(gene = results_anno$APOE4$GREAT_annotation, 
+         chr = results_anno$APOE4$seqnames,
+         start = as.character(results_anno$APOE4$start ),.before = "source")
+
+table_summ <- table %>% 
+  summarise_if(is.numeric, ~sum(!is.na(.))) %>% 
+  mutate(cpg = NA, gene = NA, chr = NA, start = NA, source = NA, .before = 1)
+table_summ[1,!is.na(table_summ)] <- paste0("n = ", table_summ[1,!is.na(table_summ)], " cpg")
+table <- table %>% 
+  mutate_if(is.numeric, list(~formatC(., format = "e", digits = 2)))
+table <- rbind(table_summ, table)
+table[table == " NA"] <- ""
+colnames(table)[6:13] <- c(
+  "APOE4", "Smoking status", "Education years", "MMSE", "BMI", 
+  "Blood glucose", "Treated for diabetes", "Treated for hypertension"
+)
+```
+
+```{r eval = F}
+writexl::write_xlsx(
+  table,
+  file.path(dir.results, "Summary_Table_FHS9_covariates_results.xlsx")
+)
+```
+
+## CpG test adjust for risk factor
+
+```{r}
+covariates <- c("APOE4", "smoking_status", "EDUC_YEAR", "BMI9", "DMRX9", "HRX9")
+results_ls <- purrr::map(covariates, ~{
+  readxl::read_xlsx(
+    file.path(dir.results, "FHS9_covariates_results.xlsx"),
+    sheet = .
+  )
+})
+names(results_ls) <- covariates
+
+results_anno <- purrr::map(covariates, ~{
+  readxl::read_xlsx(
+    file.path(dir.results, "FHS9_covariates_results_annotated.xlsx"),
+    sheet = .
+  )
+})
+names(results_anno) <- covariates
+```
+
+```{r}
+results_ls <- results_ls %>% purrr::map(., ~{
+  .[,grep("cpg|source|p", colnames(.))]
+})
+table <- plyr::join_all(results_ls, by=c("cpg", "source"), type='left') 
+colnames(table) <- gsub("_p|1_p", "", colnames(table))
+table[,c(2,3)] <- table[,c(3,2)]
+colnames(table)[2:3] <- c("source", "APOE4")
+table <- table %>% 
+  mutate(chr = results_anno$APOE4$seqnames,
+         pos = as.character(results_anno$APOE4$start), 
+         Illumina = results_anno$APOE4$UCSC_RefGene_Name,
+         GREAT_annotation = results_anno$APOE4$GREAT_annotation ,.before = "source")
+```
+
+```{r message = F}
+pheno_df <- read_csv(
+   file.path(dir.data.clinical, "FHS_Offspring_EPIC_EXAM9_with_risk_factor.csv")
+)
+```
+
+```{r}
+results <- plyr::adply(
+  table,
+  .margins = 1,
+  .fun = function(tb){
+
+    cpg <- tb$cpg
+    cg <- scale(beta[cpg,])
+    
+    risk_factor <- tb[,7:12]
+    sig_risk_factor <- colnames(risk_factor)[which(risk_factor < 0.05)]
+    adjust_var <- c("Age_at_collection", "sex", celltype)
+    if(length(sig_risk_factor) > 0) {
+      adjust_var <- c(adjust_var, sig_risk_factor)
+    } 
+    sig_risk_factor_name <- ifelse(
+      sig_risk_factor %in% "smoking_status", "Smoking status", 
+      ifelse(sig_risk_factor %in% "EDUC_YEAR", "Education years", 
+             ifelse(sig_risk_factor %in% "BMI9", "BMI",
+                    ifelse(sig_risk_factor %in% "DMRX9", "Treated for diabetes",
+                           ifelse(sig_risk_factor %in% "HRX9", "Treated for hypertension", "APOE4"))))
+    )
+    suppressWarnings({
+      res <- get_cox_coef(
+        cpg = cg, 
+        pheno = pheno_df,
+        time_var = "dem_followup_time",
+        event_var = "DEM_STATUS",
+        adjust_var = adjust_var
+      )
+    })
+    
+    data.frame(
+      tb[,1:6],
+      risk_factor = ifelse(length(sig_risk_factor_name) > 0,
+                           paste0(sig_risk_factor_name, collapse = ", "),
+                           ""),
+      res)
+  }, .parallel = T, .expand = F, .id = NULL
+)
+
+results <- left_join(
+  results,
+  results_meta %>% dplyr::select(cpg, grep("FHS9", colnames(results_meta), value = T))
+)
+
+results2 <- results %>%
+  filter(risk_factor != "") %>% 
+  arrange(desc(source))
+```
+
+```{r  eval = F}
+write_csv(
+  results2,
+  file.path(dir.results,
+            "FHS9_adjusted_for_risk_factor_sig_cpg_results.csv")
+)
+```
+
+# Session Information
+
+<details>
+  <summary>**Session Info**</summary>
+```{r session}
+sessionInfo()
+```
+</details>

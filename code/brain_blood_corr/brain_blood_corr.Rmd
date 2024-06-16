@@ -1,0 +1,425 @@
+---
+title: "Blood DNA Methylation Signature for Incident Dementia: Evidence from Longitudinal Cohorts"
+subtitle: "Brain blood correlation using London dataset"
+author: 
+  - Wei Zhang^[University of Miami]
+  - Lily Wang^[University of Miami]
+date: "`r Sys.Date()`"
+output:
+  rmarkdown::html_document:
+    highlight: pygments
+    theme: yeti
+    toc: true
+    number_sections: true
+    df_print: paged
+    code_download: false
+    toc_float:
+      collapsed: yes
+    toc_depth: 3
+editor_options:
+  chunk_output_type: inline    
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+dir.base <- "../.."
+dir.results <- file.path(dir.base, "analysis_results")
+dir.results.meta <- file.path(dir.results, "meta_analysis")
+dir.results.combp <- file.path(dir.results, "combp")
+dir.results.corr <- file.path(dir.results, "brain_blood_corr")
+dir.data <- file.path(dir.base,"../DATASETS/") 
+dir.london <- file.path(dir.data, "LONDON/")
+dir.london.data <- file.path(dir.london, "DNAm/pca_filtering")
+dir.london.pheno <- file.path(dir.london, "Phenotype/processed")
+dir.data.corr <- file.path(dir.base, "datasets/brain_blood_corr/")
+dir.data.aux <- file.path(dir.data,"Aux_Sync") 
+dir.plot <- file.path(dir.results, "plots")
+for(p in grep("dir",ls(),value = T)) dir.create(get(p),recursive = TRUE,showWarnings = FALSE)
+```
+
+```{r message = F, warning=F}
+source("../utility/annotation_and_bacon.R")
+source("../utility/cpg_test.R")
+source("../utility/plot.R")
+```
+
+# Load data
+
+## London
+
+```{r}
+brain_beta <- readRDS(
+  file.path(dir.london.data, "BRAIN/London_PFC_QNBMIQ_PCfiltered_withStageExclude.RDS")
+)
+brain_pheno <- readRDS(
+  file.path(dir.london.pheno, "pheno107_PFC_withNeuronProp_withStageExclude_df.RDS")
+)
+blood_beta <- readRDS(
+  file.path(dir.london.data, "BLOOD/London_QNBMIQ_PCfiltered_withStatusExclude.RDS")
+)
+blood_pheno <- readRDS(
+  file.path(dir.london.pheno, "pheno_BLOOD_withBloodProp_withStatusExclude_df.rds")
+)
+```
+
+## Limit samples in both datasets
+
+```{r}
+### Renames variables
+colnames(brain_pheno)[c(1, 3:ncol(brain_pheno))] <- paste0(
+  "brain_", colnames(brain_pheno)[c(1, 3:ncol(brain_pheno))]
+)
+colnames(blood_pheno)[c(1, 3:ncol(blood_pheno))] <- paste0(
+  "blood_", colnames(blood_pheno)[c(1, 3:ncol(blood_pheno))]
+)
+
+### Merge datasets
+pheno_final <- merge(
+  brain_pheno, blood_pheno,
+  by = "subject.id"
+) #dim: 69 23
+
+### Limit beta matrices to samples in pheno_final
+brain_beta_final <- brain_beta[, pheno_final$brain_sample]
+blood_beta_final <- blood_beta[, pheno_final$blood_sample]
+```
+
+## Meta-analysis results
+
+```{r message = F}
+## Load meta results
+results_meta <- read_csv(
+  file.path(dir.results.meta,
+            "meta_analysis_FHS9_ADNI_results.csv")
+) %>% dplyr::select(
+  cpg, estimate, se, pVal.fixed, pVal.random, pVal.Q, direction, fdr,
+  ADNI_pValue.bacon, FHS9_pValue.bacon
+)
+
+## Sig single cpgs
+cpgs.sig <- results_meta %>% filter(fdr < .05 & 
+               direction %in% c("++", "--") & 
+               ADNI_pValue.bacon < 0.05 & FHS9_pValue.bacon < 0.05) %>%
+  pull(cpg) ## 44
+
+## Load comb-p DMR results
+sig.dmr <- read_csv(
+  file.path(dir.results.combp, "combp_FHS9_ADNI_results_annotated.csv")
+) %>% 
+  filter(z_sidak_p < 0.05 & z_p < 1E-05 & pct_direction %in% c(0,1) & n_probes >= 3)
+sig.dmr <- str_split(sig.dmr$cpgs_in_region, ",") %>% unlist() ## 233
+
+write.csv(
+  data.frame(unique(c(sig.dmr, cpgs.sig))),
+  file.path(dir.data.corr, "Sig_CpGs_for_input_BEcon.csv"),
+  row.names = F
+)
+```
+
+# Calculate correlation
+
+```{r}
+### Limit blood_beta and brain_beta to probes in main_cpgs
+brain_beta_cpgs <- brain_beta_final[
+  row.names(brain_beta_final) %in% unique(c(sig.dmr, cpgs.sig)),
+  ]
+
+blood_beta_cpgs <- blood_beta_final[
+  row.names(blood_beta_final) %in% unique(c(sig.dmr, cpgs.sig)),
+  ]
+
+identical(dim(brain_beta_cpgs), dim(blood_beta_cpgs))
+```
+
+## Residual
+
+```{r message = F}
+pheno_final$brain_slide <- as.character(pheno_final$brain_slide)
+# brain residuals
+brain_resid <- methyl_adj(
+  mat = brain_beta_cpgs,
+  pheno = pheno_final,
+  adjust_var = c("brain_age.brain", "brain_sex", "brain_prop.neuron", "brain_slide"),
+  convert_to_M = T,
+  return_to_beta = F
+)
+# blood residuals
+pheno_final$blood_Gran <- pheno_final$blood_Eosino + pheno_final$blood_Neutro
+blood_resid <- methyl_adj(
+  mat = blood_beta_cpgs,
+  pheno = pheno_final,
+  adjust_var = c("blood_age.blood", "blood_sex", "blood_slide", 
+                 "blood_B", "blood_CD4T", "blood_NK", "blood_Gran", "blood_Mono"),
+  convert_to_M = T,
+  return_to_beta = F
+)
+``` 
+
+```{r eval = F}
+save(
+  brain_resid,
+  blood_resid,
+  file = file.path(dir.data.corr, "LONDON_blood_brain_QNBMIQ_PCfiltered_mvalResiduals.rda")
+)
+```
+
+```{r}
+blood_brain_cor <- lapply(seq_len(nrow(brain_resid)), function(row){
+  spearman_cor <- cor.test(
+    brain_resid[row,],
+    blood_resid[row,],
+    method = "spearman", 
+    exact = F
+  )
+  
+  data.frame(
+    cpg = row.names(brain_resid)[row],
+    spearman_cor = spearman_cor$estimate,
+    pVal = spearman_cor$p.value,
+    stringsAsFactors = FALSE
+  )
+})
+
+blood_brain_cor <- do.call(rbind, blood_brain_cor)
+blood_brain_cor$fdr <- p.adjust(blood_brain_cor$pVal, method = "fdr")
+blood_brain_cor
+```
+
+```{r eval = F}
+write.csv(
+  blood_brain_cor,
+  file.path(dir.data.corr, "London_blood_brain_residuals_correlation_cpgs.csv"),
+  row.names = FALSE
+)
+```
+
+## Beta
+
+```{r}
+blood_brain_cor <-  plyr::adply(seq_len(nrow(brain_beta_cpgs)),
+                                .margins = 1,
+                                .fun =  function(row){
+                                  spearman_cor <- cor.test(
+                                    brain_beta_cpgs[row,],
+                                    blood_beta_cpgs[row,],
+                                    method = "spearman",
+                                    exact = F
+                                  )
+                                  
+                                  data.frame(
+                                    cpg = row.names(brain_beta_cpgs)[row],
+                                    spearman_cor = spearman_cor$estimate,
+                                    pVal = spearman_cor$p.value,
+                                    stringsAsFactors = FALSE
+                                  )
+                                },.id = NULL)
+
+blood_brain_cor$fdr <- p.adjust(blood_brain_cor$pVal, method = "fdr")
+blood_brain_cor
+```
+
+```{r eval = F}
+write.csv(
+  blood_brain_cor,
+  file.path(dir.data.corr, "London_blood_brain_beta_correlation_cpgs.csv"),
+  row.names = FALSE
+)
+```
+
+## BECon
+
+```{r message = F}
+corr_becon <- readr::read_csv(
+  file.path(dir.data.corr,
+            "BEcon_results_sig_cpgs.csv")
+) %>% dplyr::select(
+  c("CpG ID", "Cor Blood-BA7", "Cor Blood- BA10", "Cor Blood- BA20", "Mean Cor All Brain")
+)
+colnames(corr_becon) <- c(
+  "cpg", "BECon_cor_BA7", "BECon_cor_BA10", "BECon_cor_BA20", "BECon_cor_mean"
+)
+```
+
+# Merge results
+
+```{r message = F}
+corr_beta <- read_csv(
+  file.path(dir.data.corr, "London_blood_brain_beta_correlation_cpgs.csv")
+) %>%
+  rename_with(~paste0("beta_", .x), !"cpg")
+corr_res <- read_csv(
+  file.path(dir.data.corr, "London_blood_brain_residuals_correlation_cpgs.csv")
+) %>%
+  rename_with(~paste0("res_", .x), !"cpg")
+```
+
+## Merge correlation results
+
+```{r message = F, warning=F}
+final_results <- full_join(
+  full_join(
+    corr_beta, corr_res
+  ), corr_becon
+)
+final_results <- unique(final_results)
+```
+
+## Add annotation
+
+```{r message = F}
+library(IlluminaHumanMethylation450kanno.ilmn12.hg19)
+# Add annotation
+final_results_annotate <- annotate_results(
+  final_results,
+  dir.data.aux = dir.data.aux,
+  save = F
+)
+final_results_annotate <- add_chmm_annotation(
+  final_results_annotate,
+  dir.data.aux = dir.data.aux
+)
+```
+
+## Merge meta analysis results
+
+```{r}
+final_results_annotate_meta <- left_join(
+  final_results_annotate,
+  results_meta
+)
+final_results_annotate_meta$cpg_source <- 
+  ifelse(!final_results_annotate_meta$cpg %in% sig.dmr, "CpG in meta-analysis",
+         ifelse(!final_results_annotate_meta$cpg %in% cpgs.sig, "CpG in DMR", "CpG in both meta-analysis and DMR"))
+```
+
+```{r eval = F}
+write_csv(
+  final_results_annotate_meta,
+  file.path(dir.results.corr, 
+            "Brain_blood_correlation_results.csv")
+)
+```
+
+# Plot 
+
+```{r message = F}
+cpg <- c("cg03151810","cg11388673","cg02530860")
+```
+
+## London
+
+```{r}
+brain_beta <- readRDS(
+  file.path(dir.london.data, "BRAIN/London_PFC_QNBMIQ_PCfiltered_withStageExclude.RDS")
+)
+brain_pheno <- readRDS(
+  file.path(dir.london.pheno, "pheno107_PFC_withNeuronProp_withStageExclude_df.RDS")
+)
+blood_beta <- readRDS(
+  file.path(dir.london.data, "BLOOD/London_QNBMIQ_PCfiltered_withStatusExclude.RDS")
+)
+blood_pheno <- readRDS(
+  file.path(dir.london.pheno, "pheno_BLOOD_withBloodProp_withStatusExclude_df.rds")
+)
+
+### Renames variables
+colnames(brain_pheno)[c(1, 3:ncol(brain_pheno))] <- paste0(
+  "brain_", colnames(brain_pheno)[c(1, 3:ncol(brain_pheno))]
+)
+colnames(blood_pheno)[c(1, 3:ncol(blood_pheno))] <- paste0(
+  "blood_", colnames(blood_pheno)[c(1, 3:ncol(blood_pheno))]
+)
+
+### Merge datasets
+pheno_final <- merge(
+  brain_pheno, blood_pheno,
+  by = "subject.id"
+) #dim: 69 23
+
+### Limit beta matrices to samples in pheno_final
+brain_beta_final <- brain_beta[, pheno_final$brain_sample]
+blood_beta_final <- blood_beta[, pheno_final$blood_sample]
+```
+
+## Meta analysis
+
+```{r}
+# FHS exam 9
+results_fhs9 <- read_csv(
+  file.path(dir.results, "Framingham/EPIC_EXAM9/Framingham_EPIC_beta_single_cpg_cox_all_celltypes_bacon_results.csv")
+)
+results_fhs9 <- results_fhs9 %>% 
+  mutate(study = "FHS",
+         study_id = "FHS9")
+# ADNI
+results_adni <- read_csv(
+  file.path(dir.results, "ADNI/cox/ADNI_adjust_celltypes_first_2pc_single_cpg_cox_bacon_correction.csv")
+)
+results_adni <- results_adni %>% 
+  mutate(study = "ADNI",
+         study_id = "ADNI")
+results_list <- list(
+  FHS9 = results_fhs9,
+  ADNI = results_adni
+) 
+```
+
+
+```{r}
+plot_list1 <- plyr::llply(
+  cpg,
+  .fun = function(i) {
+    data <- data.frame(brain = brain_beta_final[i,],
+                       blood = blood_beta_final[i,])
+    # plot scatter
+    plot_scatter(
+      x1 = "blood",
+      x2 = "brain", 
+      data = data,
+      xlab = "London blood DNAm beta value",
+      ylab = "London brain DNAm beta value",
+      title = i
+    ) + theme(title = element_text(size = 10, face = "bold"))
+  }
+)
+p1 <- ggarrange(
+  plotlist = plot_list1,
+  ncol = 1
+)
+```
+
+```{r}
+p2 <- plot_forest(
+  results_list = results_list,
+  cpg_order = cpg,
+  effect = "Estimate.bacon",
+  se = "StdErr.bacon",
+  sm = "HR",
+  studlab = c("FHS", "ADNI"),
+  ncol = 1,
+  nrow = 3
+)
+```
+
+```{r fig.width=8, fig.height=12}
+ggarrange(p1,p2,nrow = 1,ncol = 2)
+```
+
+```{r eval = F}
+ggsave(
+  file.path(dir.plot, "london_brain_blood_scatter_meta_forest_plot.pdf"),
+  width = 14,
+  height = 20
+)
+```
+
+
+# Session Information
+
+<details>
+  <summary>**Session Info**</summary>
+```{r session}
+sessionInfo()
+```
+</details>
+

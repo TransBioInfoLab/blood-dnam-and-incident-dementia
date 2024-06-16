@@ -1,0 +1,149 @@
+---
+title: "Blood DNA Methylation Signature for Incident Dementia: Evidence from Longitudinal Cohorts"
+subtitle: "Pathway Analysis -- methylGSA"
+author: 
+  - Wei Zhang^[University of Miami]
+  - Lily Wang^[University of Miami]
+date: "`r Sys.Date()`"
+output:
+  rmarkdown::html_document:
+    highlight: pygments
+    theme: yeti
+    toc: true
+    number_sections: true
+    df_print: paged
+    code_download: false
+    toc_float:
+      collapsed: yes
+    toc_depth: 3
+editor_options:
+  chunk_output_type: inline    
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+dir.base <- "../.."
+dir.results <- file.path(dir.base, "analysis_results")
+dir.results.meta <- file.path(dir.results, "meta_analysis")
+dir.pathway <-file.path(dir.results, "pathway_analysis")
+dir.results.combp <- file.path(dir.results, "combp")
+dir.plot <- file.path(dir.results, "plots")
+for(p in grep("dir",ls(),value = T)) dir.create(get(p),recursive = TRUE,showWarnings = FALSE)
+```
+
+# Load packages and results
+
+```{r message = F, warning = F}
+source("../utility/pathway.R")
+source("../utility/plot.R")
+```
+
+```{r message = F, warning = F}
+library(tidyverse)
+library(data.table)
+library(ggpubr)
+library(methylGSA)
+library(clusterProfiler)
+library(IlluminaHumanMethylationEPICanno.ilm10b4.hg19)
+```
+
+```{r message = F}
+## Load meta results
+results <- read_csv(
+  file.path(dir.results.meta,
+            "meta_analysis_FHS9_ADNI_results.csv")
+)
+
+cpg_list <- results %>% pull(pVal.fixed, name = cpg)
+```
+
+# methylGSA
+
+```{r eval = F}
+results_pathway <- methylGSA_wrapper(
+  cpg.pval = cpg_list,
+  array = "EPIC",
+  method = "GSEA",
+  GS = c("KEGG", "Reactome"),
+  minsize = 2,
+  maxsize = 200
+)
+
+writexl::write_xlsx(
+  list(KEGG = results_pathway$KEGG$results,
+       Reactome = results_pathway$Reactome$results),
+  file.path(dir.pathway, "methylGSA_pathway_analysis_GSEA_KEGG_Reactome_range_2_200_results.xlsx")
+)
+```
+
+# Plot
+
+```{r}
+results_pathway <- plyr::llply(
+  c("KEGG", "Reactome"),
+  .fun = function(i) {
+    readxl::read_xlsx(
+      file.path(dir.pathway, "methylGSA_pathway_analysis_GSEA_KEGG_Reactome_range_2_200_results.xlsx"),
+      sheet = i
+    )
+  }
+)
+names(results_pathway) <- c("KEGG", "Reactome")
+```
+
+## KEGG
+
+
+```{r fig.height=10, fig.width=10}
+p1 <- plot_pathway(results_pathway$KEGG, title = "KEGG")
+p1
+```
+
+```{r eval = F}
+ggsave(
+  filename =  file.path(dir.plot,"KEGG_barplot.pdf"),
+  height = 8,
+  width = 12
+)
+```
+
+## Reactome
+
+```{r fig.height=10, fig.width=10}
+p2 <- plot_pathway(results_pathway$Reactome, title = "Reactome", ylim = 1e-5)
+p2
+```
+
+```{r eval = F}
+ggsave(
+  filename =  file.path(dir.plot,"Reactome_barplot.pdf"),
+  height = 8,
+  width = 14
+)
+```
+
+```{r eval = F}
+plot_grid(p1,p2,ncol = 1, align="v",
+          labels = "AUTO") +
+    theme(plot.margin = unit(c(.5,.5,1.5,.5), "in"))
+
+ggsave(
+  filename =  file.path(dir.plot,"KEGG_Reactome_barplot.pdf"),
+  height = 16,
+  width = 14
+)
+ggsave(
+  filename =  file.path(dir.plot,"KEGG_Reactome_barplot.png"),
+  height = 16,
+  width = 14
+)
+```
+
+# Session Information
+
+<details>
+  <summary>**Session Info**</summary>
+```{r session}
+sessionInfo()
+```
+</details>

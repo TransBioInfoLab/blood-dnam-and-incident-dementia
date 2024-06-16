@@ -1,0 +1,138 @@
+---
+title: "Blood DNA Methylation Signature for Incident Dementia: Evidence from Longitudinal Cohorts"
+subtitle: "Kinship Matrix"
+author: 
+  - Wei Zhang^[University of Miami]
+  - Lily Wang^[University of Miami]
+date: "`r Sys.Date()`"
+output:
+  rmarkdown::html_document:
+    highlight: pygments
+    theme: yeti
+    toc: true
+    number_sections: true
+    df_print: paged
+    code_download: false
+    toc_float:
+      collapsed: yes
+    toc_depth: 3
+editor_options:
+  chunk_output_type: inline    
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+cohort <- "Framingham"
+dir.base <- "../../.."
+dir.data <- file.path(dir.base,"../DATASETS/", cohort)
+dir.data.processed <- file.path(dir.data, "DNAm/processed/EPIC") 
+dir.data.pheno.raw <- file.path(dir.data, "Phenotype/raw/")
+dir.data.clinical <- file.path(dir.data, "Phenotype/processed/EPIC")
+dir.results <- file.path(dir.base, "analysis_results", cohort, "EPIC_EXAM9")
+dir.results.meta <- file.path(dir.base, "analysis_results/meta_analysis")
+
+library(kinship2)
+library(coxme)
+library(tidyverse)
+library(data.table)
+library(SummarizedExperiment)
+library(janitor)
+```
+
+# Load pedigree information
+
+```{r}
+pedigree <- list.files(
+  path = file.path(dir.data.pheno.raw, "Pedigree/"),
+  pattern = ".*txt.gz",
+  full.names = T
+) %>% 
+  purrr::map(.,~fread(.,skip = 10)) %>% 
+  Reduce(rbind,.)
+```
+
+# Load pheno data
+
+```{r}
+framingham_se <- readRDS(
+  file.path(dir.data.processed, "FHS_OffSpring_EPIC_rm_dem_nw_se.RDS")
+)
+celltype <- c("B", "NK", "CD4T", "Mono", "Gran")
+betaMat <- assay(framingham_se)
+pheno_df <- colData(framingham_se) %>% data.frame()
+pheno_df <- pheno_df %>% 
+  mutate(across(all_of(celltype), ~ .x*100))
+```
+
+# Calculate kinship matrix
+
+```{r}
+pd <- pedigree(
+  id = pedigree$shareid,
+  dadid = pedigree$fshare,
+  momid = pedigree$mshare,
+  sex = pedigree$sex,
+  famid = pedigree$pedno
+)
+# kinship
+kinMat <- kinship(pd)
+kinMat <- as.matrix(kinMat)
+```
+
+```{r}
+kinMat_sub <- kinMat[rownames(kinMat) %in% as.character(pheno_df$shareid),
+                     colnames(kinMat) %in% as.character(pheno_df$shareid)]
+kinMat_sub <- kinMat_sub[as.character(pheno_df$shareid),as.character(pheno_df$shareid)]
+```
+
+```{r message = F}
+results_meta <- read_csv(
+  file.path(dir.results.meta,
+            "meta_analysis_FHS9_ADNI_results.csv")
+) %>%
+  filter(fdr < .05 & 
+           direction %in% c("++", "--") & 
+           ADNI_pValue.bacon < 0.05 & FHS9_pValue.bacon < 0.05)
+```
+
+```{r}
+beta <- betaMat[results_meta$cpg,]
+```
+
+```{r}
+library(doParallel)
+doParallel::registerDoParallel(10)
+results2 <- foreach::foreach(
+  i = 1:nrow(beta),
+  .combine = "rbind",
+  .errorhandling = "remove") %dopar% {
+    df <- data.frame(cpg = scale(beta[i,]), pheno_df)
+    cox_mod <- coxme(
+      as.formula(paste0("Surv(dem_followup_time, DEM_STATUS) ~ cpg + Age_at_collection + sex + ", 
+                        paste0(celltype, collapse = " + ")," + (1|shareid)")),
+      data = df,
+      varlist = coxmeMlist(2*kinMat_sub))
+   # get summary and coefficient
+   cox_coef <- summary(cox_mod)$coefficients %>% data.frame()
+  
+   coef_df <- cox_coef[grepl("cpg", rownames(cox_coef)),] %>% 
+     clean_names()
+   
+   data.frame(cpg = rownames(beta)[i], coef_df)
+}
+
+colnames(results2)[2:6] <- paste0("coxme_", colnames(results2)[2:6])
+results <- left_join(results2, 
+                     results_meta %>% 
+                       dplyr::select(cpg, 
+                                     grep("FHS9", colnames(results_meta), value = T),
+                                     estimate, se, pVal.random, pVal.random, direction, fdr))
+```
+
+```{r}
+write_csv(
+  results,
+  file.path(dir.results, "Framingham_EPIC_beta_single_cpg_coxme_kinship_sig_results.csv")
+)
+```
+

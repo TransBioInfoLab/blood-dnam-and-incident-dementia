@@ -1,0 +1,291 @@
+---
+title: "Blood DNA Methylation Signature for Incident Dementia: Evidence from Longitudinal Cohorts"
+subtitle: "Check overlap with eQTm results"
+author: 
+  - Wei Zhang^[University of Miami]
+  - Lily Wang^[University of Miami]
+date: "`r Sys.Date()`"
+output:
+  rmarkdown::html_document:
+    highlight: pygments
+    theme: yeti
+    toc: true
+    number_sections: true
+    df_print: paged
+    code_download: false
+    toc_float:
+      collapsed: yes
+    toc_depth: 3
+editor_options:
+  chunk_output_type: inline    
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+dir.base <- "../.."
+dir.data.aux <- file.path(dir.base,"../DATASETS/Aux_Sync") 
+dir.results <- file.path(dir.base, "analysis_results")
+dir.results.meta <- file.path(dir.results, "meta_analysis")
+dir.results.combp <- file.path(dir.results, "combp")
+dir.supp <- file.path(dir.base, "datasets/SuppFiles") 
+dir.results.overlap <- file.path(dir.results, "overlap")
+for(p in grep("dir",ls(),value = T)) dir.create(get(p),recursive = TRUE,showWarnings = FALSE)
+```
+
+```{r message = F}
+library(tidyverse)
+library(IlluminaHumanMethylationEPICanno.ilm10b4.hg19)
+source("../utility/annotation_and_bacon.R")
+```
+
+# Load results
+
+```{r message = F, warning = F}
+## Load meta results
+cpgs.sig <- read_csv(
+  file.path(dir.results.meta,
+            "meta_analysis_FHS9_ADNI_results.csv")
+) %>% filter(pVal.fixed < 1e-05 & 
+               direction %in% c("++", "--") & 
+               ADNI_pValue.bacon < 0.05 & FHS9_pValue.bacon < 0.05) %>%
+  pull(cpg) ## 45
+
+## Load comb-p DMR results
+sig.dmr <- read_csv(
+  file.path(dir.results.combp, "combp_FHS9_ADNI_results_annotated.csv")
+) %>% 
+  filter(z_sidak_p < 0.05 & z_p < 1E-05 & pct_direction %in% c(0,1) & n_probes >= 3)
+sig.dmr <- str_split(sig.dmr$cpgs_in_region, ",") %>% unlist() ## 233
+
+## Load mQTL results
+sig.mqtl <- readxl::read_xlsx(
+  file.path(dir.base, "DRAFT_FIGURES_TABLES/Supp Table 5 - Significant CpG - mQTL pairs.xlsx"),
+  skip = 2
+) %>% pull(CpG) %>% unique()
+```
+
+# Auxillary function
+
+```{r}
+check_overlap <- function(cpg, idx, colname_prefix, match_column, return_overlap = F, dir.supp, filename, skip = 1){
+  data <- data.frame(cpg = cpg)
+  
+  # Annotation
+  data <- annotate_results(data, array = "EPIC",
+                           dir.data.aux = dir.data.aux,
+                           save = F)
+  
+  # Load supp
+  supp <- purrr::map(idx, ~readxl::read_xlsx(
+    file.path(dir.supp, filename),
+    sheet = .,
+    skip = skip
+  ))
+
+  plyr::l_ply(
+    1:length(supp),
+    .fun = function(i){
+      overlap <- ifelse(data$cpg %in% supp[[i]][[match_column]],1,0)
+      data[[colname_prefix[i]]] <<- overlap
+    }
+  )
+  if(return_overlap) {
+    res <- plyr::llply(
+      1:length(supp),
+      .fun = function(i){
+        colnames(supp[[i]])[colnames(supp[[i]]) == match_column] <- "cpg"
+        dplyr::inner_join(data[,! colnames(data) %in% colname_prefix], supp[[i]])
+      }
+    )
+    names(res) <- colname_prefix
+    c(list(overlap = data), res)
+  } else {
+    data
+  }
+}
+```
+
+# Study 1
+
+```{r warning = F}
+sig_cpg_df <- check_overlap(
+  cpg = cpgs.sig, 
+  idx = c(2,3,6),
+  colname_prefix = c("sig_in_cis_cpgs_FHS", "sig_in_trans_cpgs_FHS", "sig_in_cis_cpgs_meta"),
+  match_column = "CpG",
+  dir.supp = dir.supp,
+  filename = "eQTm_FHS_array_ClinicalEpigenetics_13148_2021_1041_MOESM2_ESM.xlsx",
+  return_overlap = T
+)
+sum(sig_cpg_df$overlap$sig_in_cis_cpgs_FHS)
+sum(sig_cpg_df$overlap$sig_in_trans_cpgs_FHS) 
+sum(sig_cpg_df$overlap$sig_in_cis_cpgs_meta)
+
+sig_dmr_df <- check_overlap(
+  cpg = sig.dmr, 
+  idx = c(2,3,6),
+  colname_prefix = c("sig_in_cis_cpgs_FHS", "sig_in_trans_cpgs_FHS", "sig_in_cis_cpgs_meta"),
+  match_column = "CpG",
+  dir.supp = dir.supp,
+  filename = "eQTm_FHS_array_ClinicalEpigenetics_13148_2021_1041_MOESM2_ESM.xlsx",
+  return_overlap = T
+)
+sum(sig_dmr_df$overlap$sig_in_cis_cpgs_FHS)
+sum(sig_dmr_df$overlap$sig_in_trans_cpgs_FHS)
+sum(sig_dmr_df$overlap$sig_in_cis_cpgs_meta)
+
+writexl::write_xlsx(
+  c("Meta_analysis" = sig_cpg_df,
+    "DMR" = sig_dmr_df),
+  file.path(dir.results.overlap, "Overlapped_CpGs_with_eQTm_FHS_array_ClinicalEpigenetic.xlsx")
+)
+```
+
+```{r warning = F}
+sig_cpg_df <- check_overlap(
+  cpg = sig.mqtl, 
+  idx = c(2,3,6),
+  colname_prefix = c("sig_in_cis_cpgs_FHS", "sig_in_trans_cpgs_FHS", "sig_in_cis_cpgs_meta"),
+  match_column = "CpG",
+  dir.supp = dir.supp,
+  filename = "eQTm_FHS_array_ClinicalEpigenetics_13148_2021_1041_MOESM2_ESM.xlsx",
+  return_overlap = T
+)
+
+writexl::write_xlsx(
+  sig_cpg_df,
+  file.path(dir.results.overlap, "Overlapped_CpGs_with_eQTm_FHS_and_mQTL.xlsx")
+)
+```
+
+# Study 2
+
+```{r warning = F}
+sig_cpg_df <- check_overlap(
+  cpg = cpgs.sig, 
+  idx = c(2,3),
+  colname_prefix = c("sig_in_cis_cpgs_FHS", "sig_in_trans_cpgs_FHS"),
+  match_column = "CpG",
+  dir.supp = dir.supp,
+  filename = "eQTm_FHS_RNAseq_ScientificReport_41598_2023_39936_MOESM1_ESM.xlsx"
+)
+sum(sig_cpg_df$sig_in_cis_cpgs_FHS)
+sum(sig_cpg_df$sig_in_trans_cpgs_FHS)
+
+sig_dmr_df <- check_overlap(
+  cpg = sig.dmr, 
+  idx = c(2,3),
+  colname_prefix = c("sig_in_cis_cpgs_FHS", "sig_in_trans_cpgs_FHS"),
+  match_column = "CpG",
+  dir.supp = dir.supp,
+  filename = "eQTm_FHS_RNAseq_ScientificReport_41598_2023_39936_MOESM1_ESM.xlsx"
+)
+sum(sig_dmr_df$sig_in_cis_cpgs_FHS)
+sum(sig_dmr_df$sig_in_trans_cpgs_FHS)
+
+writexl::write_xlsx(
+  list("Meta analysis" = sig_cpg_df,
+       "DMR" = sig_dmr_df),
+  file.path(dir.results.overlap, "Overlapped_CpGs_with_eQTm_FHS_RNAseq_ScientificReport.xlsx")
+)
+```
+
+# Study 3
+
+```{r warning = F}
+library(rtracklayer)
+library(IlluminaHumanMethylationEPICanno.ilm10b4.hg19)
+# Load chain
+chain <- import.chain(file.path(dir.data.aux, "hg38ToHg19.over.chain"))
+```
+
+```{r}
+# Load hg38 results
+study3 <- readxl::read_xlsx(
+  file.path(dir.supp, "alz13514-sup-0005-supmat.xlsx"),
+  skip = 1
+)
+colnames(study3)[1:3] <- c("seqnames", "start_hg38", "end_hg38")
+study3$names <- rownames(study3)
+anno.gr <- study3 %>% makeGRangesFromDataFrame(
+  seqnames.field = "seqnames",
+  start.field = "start_hg38", end.field = "end_hg38", keep.extra.columns = F
+)
+anno.gr@ranges@NAMES <- rownames(study3)
+
+# Load hg19 annotation
+anno.hg19 <- minfi::getAnnotation(IlluminaHumanMethylationEPICanno.ilm10b4.hg19)
+anno_df <- data.frame(anno.hg19) %>% 
+  mutate(cpg = Name,
+         seqnames = chr,
+         start = pos, 
+         end = pos + 1) %>% 
+  dplyr::select(
+        "cpg", "seqnames", "start", "end", 
+        "Relation_to_Island", "UCSC_RefGene_Name", "UCSC_RefGene_Group"
+      )
+
+# Merge with hg19 annotation
+lift_gr <- liftOver(anno.gr, chain) %>%
+  unlist()
+lift_gr <- lift_gr[names(lift_gr) %in% rownames(study3)]
+lift_df <- data.frame(lift_gr)
+lift_df$names <- names(lift_gr)
+
+study3.hg19 <- inner_join(
+  left_join(
+    lift_df, study3
+  ), anno_df
+)
+```
+
+```{r eval = F}
+writexl::write_xlsx(
+  study3.hg19,
+  file.path(dir.supp, "alz13514-sup-0005-supmat_hg19.xlsx")
+) 
+```
+
+```{r warning = F}
+sig_cpg_df <- check_overlap(
+  cpg = cpgs.sig, 
+  idx = 1,
+  colname_prefix = c("DMR"),
+  match_column = "cpg",
+  dir.supp = dir.supp,
+  filename = "alz13514-sup-0005-supmat_hg19.xlsx",
+  skip = 0
+)
+sum(sig_cpg_df$DMR)
+sum(sig_cpg_df$DMR)
+
+sig_dmr_df <- check_overlap(
+  cpg = sig.dmr, 
+  idx = 1,
+  colname_prefix = c("DMR"),
+  match_column = "cpg",
+  dir.supp = dir.supp,
+  filename = "alz13514-sup-0005-supmat_hg19.xlsx",
+  skip = 0
+)
+sum(sig_dmr_df$DMR)
+sum(sig_dmr_df$DMR)
+```
+
+```{r eval = F}
+writexl::write_xlsx(
+  list("Meta analysis" = sig_cpg_df,
+       "DMR" = sig_dmr_df),
+  file.path(dir.results.overlap, "Overlapped_CpGs_with_DMR_AD.xlsx")
+)
+```
+
+# Session Information
+
+<details>
+  <summary>**Session Info**</summary>
+```{r session}
+sessionInfo()
+```
+</details>

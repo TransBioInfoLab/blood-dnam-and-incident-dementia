@@ -1,0 +1,366 @@
+---
+title: "Blood DNA Methylation Signature for Incident Dementia: Evidence from Longitudinal Cohorts"
+subtitle: "MRS analysis"
+author: 
+  - Wei Zhang^[University of Miami]
+  - Lily Wang^[University of Miami]
+date: "`r Sys.Date()`"
+output:
+  rmarkdown::html_document:
+    highlight: pygments
+    theme: yeti
+    toc: true
+    number_sections: true
+    df_print: paged
+    code_download: true
+    toc_float:
+      collapsed: yes
+    toc_depth: 3
+editor_options:
+  chunk_output_type: inline    
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+dir.base <- "../../"
+type <- "FHS9_ADNI"
+# Create and retrieve dir
+dir.data <- file.path(dir.base,"../DATASETS/")
+dir.supp <- file.path(dir.base, "datasets/meta_analysis_results/", type)
+dir.data.mrs <- file.path(dir.base, "datasets/MRS/")
+
+# Create results dir
+dir.results <- file.path(dir.base, "analysis_results/MRS_analysis", type)
+dir.results.plot <- file.path(dir.results, "plots/")
+dir.results.meta <- file.path(dir.base, "analysis_results/meta_analysis")
+dir.results.combp <- file.path(dir.base, "analysis_results/combp")
+for(p in grep("dir.",ls(),value = T)) dir.create(get(p),recursive = TRUE,showWarnings = FALSE)
+```
+
+# Load required packages
+
+```{r libs, include=T,message=F,warning=F, eval = T}
+library(readr)
+library(dplyr)
+library(SummarizedExperiment)
+library(tidyverse)
+library(caret)
+library(pROC)
+library(DT)
+library(ggplot2)
+library(ggpubr)
+```
+
+# Data preparation
+
+## Anxillary functions
+
+```{r message = F, warning = F}
+# Load functions
+source("../utility/MRS_aux_fn.R")
+source("../utility/plot.R")
+library(SummarizedExperiment)
+```
+
+## Load results
+
+### Load meta analysis results
+
+```{r message = F}
+results_meta <- read_csv(
+  file.path(dir.results.meta,
+            "meta_analysis_FHS9_ADNI_results.csv")
+)
+```
+
+```{r}
+meta_sig_weights <- results_meta %>%
+  filter(fdr < .05 & 
+           direction %in% c("++", "--") & 
+           ADNI_pValue.bacon < 0.05 & FHS9_pValue.bacon < 0.05) %>%
+  pull(estimate, name = "cpg")
+meta_sig_weights_adni <- results_meta %>%
+  filter(fdr < .05 & 
+           direction %in% c("++", "--") & 
+           ADNI_pValue.bacon < 0.05 & FHS9_pValue.bacon < 0.05) %>%
+  pull(ADNI_Estimate.bacon, name = "cpg")
+meta_sig_weights_fhs <- results_meta %>%
+  filter(fdr < .05 & 
+           direction %in% c("++", "--") & 
+           ADNI_pValue.bacon < 0.05 & FHS9_pValue.bacon < 0.05) %>%
+  pull(FHS9_Estimate.bacon, name = "cpg")
+```
+
+### Load DMR results
+
+```{r message = F}
+sig.dmr <- read_csv(
+  file.path(dir.results.combp, "combp_FHS9_ADNI_results_annotated.csv")
+) %>% 
+  filter(z_sidak_p < 0.05 & z_p < 1E-05 & pct_direction %in% c(0,1) & n_probes >= 3) 
+sig.dmr <- str_split(sig.dmr$cpgs_in_region, ",") %>% unlist() ## 233
+```
+
+```{r}
+dmr_sig_weights <- results_meta %>%
+  filter(cpg %in% sig.dmr) %>%
+  pull(estimate, name = "cpg")
+```
+
+```{r}
+cpg_weights <- list(
+  meta = meta_sig_weights,
+  dmr = dmr_sig_weights,
+  all = c(meta_sig_weights, dmr_sig_weights)[unique(c(names(meta_sig_weights),names(dmr_sig_weights)))]
+)
+```
+
+## Prepare data
+
+```{r}
+df <- c("AIBL", "AddNeuroMed")
+data_ls <- plyr::llply(
+  df,
+  .fun = function(d){
+    
+    # Function from MRS_aux_fn.R
+    dat <- data_prep(d, dir.data) 
+    gc()
+    
+    return(dat)
+  }
+)
+names(data_ls) <- df
+```
+
+# MRS analysis
+
+```{r}
+results  <- data.frame()
+mrs_list <- NULL
+loop.formulas <- c(
+  "DIAGNOSIS ~ MRS + AGE + SEX + B + NK + CD4T + Mono + Gran",
+  "DIAGNOSIS ~ MRS + AGE + SEX",
+  "DIAGNOSIS ~ MRS + AGE",
+  "DIAGNOSIS ~ MRS",
+  "DIAGNOSIS ~ AGE + SEX + B + NK + CD4T + Mono + Gran",
+  "DIAGNOSIS ~ B + NK + CD4T + Mono + Gran",
+  "DIAGNOSIS ~ AGE + SEX",
+  "DIAGNOSIS ~ AGE"
+)
+
+for(test in c("AIBL", "AddNeuroMed")){
+  for(source in c("CpGs in meta analysis", "CpGs in DMR", "CpGs in meta analysis + DMR")){
+    for (ff in loop.formulas) {
+      if(source == "CpGs in meta analysis") w <- cpg_weights$meta
+      if(source == "CpGs in DMR") w <- cpg_weights$dmr
+      if(source == "CpGs in meta analysis + DMR") w <- cpg_weights$all
+      table <- test_assoc_mrs( 
+        data_ls = data_ls,
+        test.datasets = test,
+        DEM_var = "DIAGNOSIS",
+        source = source, 
+        cpg.weight = w,
+        model.formula = ff
+      )
+      results <- rbind(results,table$results)
+      mrs_list <- c(mrs_list, setNames( list(table$MRS), paste0(ff, "_",test, "_", source)) )
+    }
+    
+  }
+}
+```
+
+```{r eval = F}
+write_csv(
+  results,
+  file.path(dir.results, "MRS_test_AIBL_AddNeuroMed_results.csv")
+)
+```
+
+```{r message = F}
+results <- read_csv(
+  file.path(dir.results, "MRS_test_AIBL_AddNeuroMed_results.csv")
+)
+```
+
+```{r}
+# Plot Boxplot
+plot_list <- NULL
+for(ff in "DIAGNOSIS ~ MRS") {
+  for(source in c("CpGs in meta analysis", "CpGs in DMR", "CpGs in meta analysis + DMR")){
+    for(test in c("AIBL", "AddNeuroMed")){
+      
+      mrs <- mrs_list[[paste0(ff, "_",test, "_", source)]]
+      mrs$DEM2 <- ifelse(mrs$DEM == "Alzheimer's disease", 
+                        paste0("Alzheimer's disease \n(n = ", table(mrs$DEM)["Alzheimer's disease"], ")"),
+                        paste0("Control \n(n = ", table(mrs$DEM)[!names(table(mrs$DEM)) %in% "Alzheimer's disease"], ")"))
+      mrs$DEM2 <- factor(mrs$DEM2, levels = c(
+        paste0("Control \n(n = ", table(mrs$DEM)[!names(table(mrs$DEM)) %in% "Alzheimer's disease"], ")"),
+        paste0("Alzheimer's disease \n(n = ", table(mrs$DEM)["Alzheimer's disease"], ")")
+      ))
+      
+      g <- ggpubr::ggboxplot(mrs,
+                        x = "DEM2", 
+                        y = "MRS", 
+                        fill = "DEM2",
+                        palette = "jco",
+                        width = 0.6,
+                        add = "jitter",
+                        title = paste0("Dataset: ",test, " \nCpG source: ", source),
+                        add.params = list(size = 0.2)) +
+        ggpubr::stat_compare_means(method = "wilcox.test") + 
+        xlab(test) +
+        guides(fill = "none") + 
+        ggpubr::font("title", size = 8)
+      
+      plot_list <- c(plot_list, list(g))
+      
+    }
+  }
+}
+ggpubr::ggarrange(plotlist = plot_list, nrow = 1, ncol = 2)
+```
+
+```{r eval = F}
+pdf(
+  file.path(dir.results.plot, "Boxplot_MRS_DEM.pdf"),
+  width = 8,
+  height = 4
+)
+ggpubr::ggarrange(plotlist = plot_list, nrow = 1, ncol = 2)
+dev.off()
+```
+
+```{r eval = F}
+# Plot Boxplot
+plot_list <- NULL
+for(ff in loop.formulas) {
+  for(source in c("CpGs in meta analysis", "CpGs in DMR", "CpGs in meta analysis + DMR")){
+    for(test in c("AIBL", "AddNeuroMed")){
+      
+      mrs <- mrs_list[[paste0(ff, "_",test, "_", source)]]
+      mrs$DEM2 <- ifelse(mrs$DEM == "Alzheimer's disease", 
+                  paste0("Alzheimer's disease \n(n = ", table(mrs$DEM)["Alzheimer's disease"], ")"),
+                  paste0("Control \n(n = ", table(mrs$DEM)[!names(table(mrs$DEM)) %in% "Alzheimer's disease"], ")"))
+      mrs$DEM2 <- factor(mrs$DEM2, levels = c(
+        paste0("Control \n(n = ", table(mrs$DEM)[!names(table(mrs$DEM)) %in% "Alzheimer's disease"], ")"),
+        paste0("Alzheimer's disease \n(n = ", table(mrs$DEM)["Alzheimer's disease"], ")")
+      ))
+      
+      g <- ggpubr::ggboxplot(mrs,
+                        x = "DEM2", 
+                        y = "probabilities", 
+                        fill = "DEM2",
+                        palette = "jco",
+                        width = 0.6,
+                        title = paste0("Model: ",ff," \nDataset: ",test, " \nCpG source: ", source),
+                        add = "jitter",
+                        add.params = list(size = 0.2)) +
+        ggpubr::stat_compare_means(method = "wilcox.test") + 
+        xlab("") +
+        guides(fill = "none") + 
+        ggpubr::font("title", size = 8)
+      
+      plot_list <- c(plot_list, list(g))
+      
+    }
+  }
+}
+```
+
+```{r eval = F}
+pdf(
+  file.path(dir.results.plot, "Boxplot_probabilities_DEM.pdf"),
+  width = 9,
+  height = 16
+)
+ggpubr::ggarrange(plotlist = plot_list, nrow = 4, ncol = 2)
+dev.off()
+```
+
+# MRS comparison adjusting for age and sex 
+
+```{r}
+cohort <- "Framingham"
+dir.data <- file.path(dir.base,"../DATASETS/", cohort)
+dir.data.processed <- file.path(dir.data, "DNAm/processed/EPIC") 
+framingham_se <- readRDS(
+  file.path(dir.data.processed, "FHS_OffSpring_EPIC_rm_dem_nw_se.RDS")
+)
+```
+
+```{r}
+cohort <- "ADNI"
+dir.results <- file.path(dir.base, "analysis_results", cohort, "cox")
+dir.results.data <- file.path(dir.base, "datasets", cohort, "BEclear") 
+adni_se_corrected <- readRDS(
+  file.path(dir.results.data, "ADNI_BEclear_se.rds")
+)
+```
+
+```{r}
+MRS <- get_MRS(cpg_weights$meta, assay(adni_se_corrected))
+pheno <- colData(adni_se_corrected) %>% data.frame()
+celltype <- c("B", "NK", "CD4T", "Mono", "Gran")
+res_adni <- plyr::ldply(
+  c("AGE", celltype,"PTGENDER"),
+  .fun = function(i) {
+    covariates <- pheno[[i]]
+    if(is.numeric(covariates)) {
+      test <- cor.test(covariates, MRS$MRS, method = "spearman")
+      estimate <- test$estimate
+    } else {
+      test <- wilcox.test(MRS$MRS~covariates)
+      estimate <- test$statistic
+    }
+    
+    data.frame(covariate = i,
+               estimate = estimate,
+               pval = test$p.value)
+  }
+)
+```
+
+```{r}
+MRS <- get_MRS(cpg_weights$meta, assay(framingham_se))
+pheno <- colData(framingham_se) %>% data.frame()
+celltype <- c("B", "NK", "CD4T", "Mono", "Gran")
+res_fhs <- plyr::ldply(
+  c("Age_at_collection", celltype, "sex"),
+  .fun = function(i) {
+    covariates <- pheno[[i]]
+    if(is.numeric(covariates)) {
+      test <- cor.test(covariates, MRS$MRS, method = "spearman")
+      estimate <- test$estimate
+    } else {
+      test <- wilcox.test(MRS$MRS~covariates)
+      estimate <- test$statistic
+    }
+    
+    data.frame(covariate = i,
+               estimate = estimate,
+               pval = test$p.value)
+  }
+)
+```
+
+```{r eval = F}
+dir.results <- file.path(dir.base, "analysis_results/MRS_analysis", type)
+writexl::write_xlsx(
+  list(ADNI = res_adni,
+       FHS = res_fhs),
+  file.path(dir.results, "MRS_meta_weights_44_meta_sig_cpgs_association_test_with_age_sex_celltype.xlsx")
+)
+```
+
+
+# Session Information
+
+<details>
+  <summary>**Session Info**</summary>
+```{r session}
+sessionInfo()
+```
+</details>

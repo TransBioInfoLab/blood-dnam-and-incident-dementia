@@ -1,0 +1,157 @@
+---
+title: "Blood DNA Methylation Signature for Incident Dementia: Evidence from Longitudinal Cohorts"
+subtitle: "Cox Regression on Single CpGs --- ADNI"
+author: 
+  - Wei Zhang^[University of Miami]
+  - Lily Wang^[University of Miami]
+date: "`r Sys.Date()`"
+output:
+  rmarkdown::html_document:
+    highlight: pygments
+    theme: yeti
+    toc: true
+    number_sections: true
+    df_print: paged
+    code_download: false
+    toc_float:
+      collapsed: yes
+    toc_depth: 3
+editor_options:
+  chunk_output_type: inline    
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+cohort <- "ADNI"
+dir.base <- "../../.."
+dir.results <- file.path(dir.base, "analysis_results", cohort, "cox")
+dir.results.data <- file.path(dir.base, "datasets", cohort, "BEclear") 
+dir.data.aux <- file.path(dir.base,"../DATASETS/Aux_Sync/") 
+```
+
+# Load data and auxilary functions
+
+```{r message = F, warning = F}
+source(file.path(dir.base, "/code/utility/cpg_test.R"))
+source(file.path(dir.base, "/code/utility/annotation_and_bacon.R"))
+```
+
+```{r}
+adni_se_corrected <- readRDS(
+  file.path(dir.results.data, "ADNI_BEclear_se.rds")
+)
+```
+
+```{r}
+betaMat <- assay(adni_se_corrected)
+pheno_df <- colData(adni_se_corrected) %>% 
+  as.data.frame() 
+
+pheno_df <- write_csv(
+  pheno_df,
+  file.path(dir.base, "../DATASETS", cohort, "Phenotype/processed/all_sample/ADNI_cn_baseline_first_visit_pheno.csv")
+)
+```
+
+# Check distribution
+
+```{r}
+# age
+mean(pheno_df$age_at_visit)
+sd(pheno_df$age_at_visit)
+# follow up time
+mean(pheno_df$SurvDays)/365
+sd(pheno_df$SurvDays)/365
+# sex
+pheno_df %>% 
+  summarise(n = n(), 
+            freq = n/nrow(pheno_df) * 100,
+            .by = PTGENDER)
+# education
+mean(pheno_df$PTEDUCAT, na.rm = T)
+sd(pheno_df$PTEDUCAT, na.rm = T)
+```
+
+# Survival analysis
+
+```{r}
+celltype <- c("B", "NK", "CD4T", "Mono", "Gran")
+adni_se_corrected$PTGENDER <- as.factor(adni_se_corrected$PTGENDER)
+betaMat <- assay(adni_se_corrected)
+pheno <- colData(adni_se_corrected) %>% data.frame()
+# Multiply 100 for celltype proportion
+pheno <- pheno %>% 
+  mutate(across(all_of(celltype), ~ .x*100))
+```
+
+```{r}
+pca_cell <- prcomp(
+  pheno[,celltype]
+)
+```
+
+## Analysis with firt two PCs of cell type proportions
+
+```{r eval = F}
+# This function is load from cpg_test.R
+results <- cox_coef(
+  beta = betaMat,
+  pheno = data.frame(pheno, pca_cell$x),
+  time_var = "SurvDays",
+  event_var = "DEM_STATUS",
+  adjust_var = c("age_at_visit", "PTGENDER", "PC1", "PC2"),
+  scale = T,
+  fdr_method = "fdr",
+  save = T,
+  dir.save = file.path(dir.results),
+  prefix = "ADNI_adjust_celltypes_first_2pc",
+  cores = 20
+)
+```
+
+```{r message = F, echo = F}
+results <- read_csv(file.path(
+  dir.results, "ADNI_adjust_celltypes_first_2pc_single_cpg_cox_results.csv"
+))
+```
+
+## Add annotation
+
+```{r}
+library(IlluminaHumanMethylationEPICanno.ilm10b4.hg19)
+# This function is load from annotation_and_bacon.R
+results_anno <- annotate_results(results,
+                                 array = "EPIC",
+                                 dir.data.aux = dir.data.aux,
+                                 dir.save = dir.results,
+                                 prefix = "ADNI_adjust_celltypes_first_2pc_single_cpg_cox")
+```
+
+## Bacon correction
+
+```{r message = F, echo = F}
+results_anno <- read_csv(file.path(
+  dir.results, "ADNI_adjust_celltypes_first_2pc_single_cpg_cox_annotated_results.csv"
+))
+```
+
+```{r}
+# This function is load from annotation_and_bacon.R
+results_bacon <- bacon_adj(
+  data = results_anno,
+  est_var = "coef",
+  z_var = "z",
+  std_var = "se_coef",
+  save = T,
+  dir.save = file.path(dir.results),
+  prefix = "ADNI_adjust_celltypes_first_2pc_single_cpg_cox")
+```
+
+# Session Information
+
+<details>
+  <summary>**Session Info**</summary>
+```{r session}
+sessionInfo()
+```
+</details>

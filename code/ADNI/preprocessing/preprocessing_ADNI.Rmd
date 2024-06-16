@@ -1,0 +1,624 @@
+---
+title: "Blood DNA Methylation Signature for Incident Dementia: Evidence from Longitudinal Cohorts"
+subtitle: "Data Preprocessing: ADNI"
+author: 
+  - Wei Zhang^[University of Miami]
+  - Lily Wang^[University of Miami]
+date: "`r Sys.Date()`"
+output:
+  rmarkdown::html_document:
+    highlight: pygments
+    theme: yeti
+    toc: true
+    number_sections: true
+    df_print: paged
+    code_download: true
+    toc_float:
+      collapsed: yes
+    toc_depth: 3
+editor_options:
+  chunk_output_type: inline    
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, eval = F)
+cohort <- "ADNI"
+dir.base <- "../../.."
+dir.data <- file.path(dir.base,"../DATASETS/", cohort)
+dir.data.raw <- file.path(dir.data, "DNAm/raw") 
+dir.data.processed <- file.path(dir.data, "DNAm/processed/") 
+dir.data.processed.all <- file.path(dir.data, "DNAm/processed/all_sample") 
+dir.data.pca <- file.path(dir.data, "DNAm/pca_filtering/all_sample") 
+dir.data.pheno.raw <- file.path(dir.data, "Phenotype/raw/")
+dir.data.clinical <- file.path(dir.data, "Phenotype/processed/all_sample")
+for(p in grep("dir",ls(),value = T)) dir.create(get(p),recursive = TRUE,showWarnings = FALSE)
+```
+
+# Load package and data
+
+```{r eval = T, message = F, warning = F}
+# Load package and predefined functions
+source("../../utility/preprocessing.R")
+```
+
+```{r}
+# Load previous RGSet
+RGSet <- readRDS(
+   file.path(dir.data.processed, "/RGSet.RDS")
+)
+```
+
+# Preprocessing clinical data
+
+```{r}
+# Get metadata
+meta <- readr::read_csv(file.path(dir.data.clinical,"../ADNI_DNA_Methylation_SampleAnnotation_20170530_with_bs.csv"))
+clinical <- readr::read_csv(file.path(dir.data.pheno.raw,"ADNIMERGE_downloaded_3-1-2021.csv"))
+meta <- meta %>% dplyr::filter(is_replicate == FALSE & !is.na(Slide))
+
+# Match ID
+meta$ID <- paste0(     
+  meta$RID,
+  meta$Phase,
+  meta$Edate
+)
+dnam.rid <- meta$ID[match(colnames(RGSet), meta$barcodes)]
+clinical$ID <- paste0(clinical$RID,clinical$COLPROT,clinical$EXAMDATE)
+clinical$ID2 <- paste0(clinical$RID,clinical$COLPROT,clinical$VISCODE)
+
+dnam.rid <- dnam.rid[dnam.rid %in% clinical$ID] 
+clinical <- clinical[match(dnam.rid,clinical$ID),]
+
+# Clinical data preprocessing
+clinical$PlateNumber <- meta$PlateNumber[
+    match(clinical$ID,meta$ID)
+]
+clinical$bisulfiteConversion <- meta$bisulfiteConversion[
+    match(clinical$ID,meta$ID)
+]
+clinical$Array  <- meta$Array[
+    match(clinical$ID,meta$ID)
+]
+
+clinical$barcodes  <- meta$barcodes[
+    match(clinical$ID,meta$ID)
+]
+
+clinical$DateDrawn <- meta$DateDrawn[
+    match(clinical$ID,meta$ID)
+]
+
+rownames(clinical) <- clinical$barcodes
+clinical$PlateNumber <- factor(clinical$PlateNumber)
+
+demo <- readr::read_csv(file.path(dir.data.pheno.raw,"PTDEMOG_3-1-2021.csv"))
+clinical$birth_month <- demo$PTDOBMM[match(clinical$RID, demo$RID)]
+clinical$birth_year <- demo$PTDOBYY[match(clinical$RID, demo$RID)]
+
+# we don't have the day so we set to one
+library(lubridate)
+clinical$age_at_visit <- interval(
+    as.Date(paste0(clinical$birth_month,"/1/",clinical$birth_year), "%m/%d/%Y"),
+    clinical$DateDrawn
+) %>% time_length(unit = "years")
+```
+
+```{r}
+RGSet_filter <- RGSet[,clinical$barcodes]
+save(
+  RGSet_filter,
+  clinical,
+  meta,
+  file = file.path(dir.data.processed.all, "RGSet_all.rda")
+)
+```
+
+# Preprocessing
+
+```{r}
+load(file.path(dir.data.processed.all, "RGSet_all.rda"))
+```
+
+## Sample QC
+
+```{r}
+# Number of samples before bs filter
+nb_samples_before_bs_filtered <- ncol(RGSet_filter)
+```
+
+### Remove bisulfiteConversion < 85
+
+```{r}
+# Calculate sample bisulfiteConversion and filter out bs < 85
+# Function samples_filter_bs load from preprocessing.R
+bs_out <- samples_filter_bs(
+  RGSet = RGSet_filter,
+  threshold = 85, # any bs < 85 will filter out
+  save = T,
+  dir_save = dir.data.processed.all
+)
+```
+
+```{r}
+RGSet_filtered <- bs_out$RGSet
+nb_samples_after_bs_filtered # 1670
+pheno_df <- clinical[match(colnames(RGSet_filtered), clinical$barcodes),]
+```
+
+```{r}
+rm(RGSet)
+rm(RGSet_filter)
+gc()
+```
+
+### Check unmatch sex
+
+```{r}
+# Use minfi package to check gender
+# Return will be the RGSet after rm the samples with unmatched sex 
+# Function samples_filter_sex load from preprocessing.R
+out <- samples_filter_sex(
+  object = RGSet_filtered,
+  sex_col = "PTGENDER", 
+  clinical_df = pheno_df,
+  package = "minfi", 
+  check_samples = T,
+  verbose = T
+) # No removed samples
+print(nb_samples_um_sex) # this is assigned by function samples_filter_sex
+```
+
+```{r}
+RGSet_filtered <- out$object
+rm(out)
+gc()
+```
+
+## Probes QC
+
+1. select detection P<0.01 in > 90% samples
+2. keep only probes that start with "cg"
+3. drop probes that are on X/Y
+4. drop probes where SNP with MAF >= 0.01 was present in the last 5 bp of the probe.
+
+```{r}
+nb_probes_before_norm <- nrow(getBeta(RGSet_filtered)) # 866836
+```
+
+```{r}
+# Calculate detection P
+# Filter by P < 0.01 in >= 90% samples
+# Function probes_filter_p load from preprocessing.R
+out <- probes_filter_p(
+  RGSet = RGSet_filtered,
+  p_thres = 0.01, # detP < 0.01
+  sample_prop = 0.9, # in > 90% samples
+  return_beta = T, 
+  save = T, 
+  dir_save = dir.data.processed.all
+)
+beta <- out$beta
+nb_probes_after_p <- nrow(beta) # 865906
+```
+
+```{r}
+# Filter probes by non-cg, SNP with MAF >= 0.01 was present in the last 5 bp of the probe and XY probes
+# Function probes_filter_SNP load from preprocessing.R
+out <- probes_filter_SNP(
+  object = beta,
+  rmNonCG = T, # remove non-cg
+  rmcrosshyb = T, # remove cross-reactive
+  rmXY = T, # remove XY
+  rmSNP = T, # remove SNP
+  dist = 5, mafcut = 0.01, and = T, # remove SNP parameters in function rmSNPandCH
+  check_probes = T,
+  save = T,
+  dir_save = dir.data.processed.all
+)
+betaSet <- out$beta
+nb_probes_after_SNP <- out$num_probes
+```
+
+## Dasen normalization
+
+```{r}
+# Create MethySet
+# Function convert_MethylSet load from preprocessing.R
+MSet <- convert_MethylSet(
+  RGSet = RGSet_filtered,
+  probes_keep = rownames(betaSet), # keep the filtered probes only 
+  save = T,
+  dir_save = dir.data.processed.all
+)
+```
+
+```{r}
+# Dasen normalization
+# Function methyl_norm load from preprocessing.R
+norm_set <- methyl_norm(
+    object = MSet, 
+    method = "dasen",
+    save = T, 
+    dir_save = dir.data.processed.all,
+    parallel = T,
+    array = "EPIC"
+  )
+```
+
+# Celltype estimation
+
+```{r}
+# Get beta matrix from MethylSet
+beta <- minfi::getBeta(norm_set)
+```
+
+```{r}
+data(centDHSbloodDMC.m)
+BloodFrac.m <- epidish(beta.m = beta, ref.m = centDHSbloodDMC.m, method = "RPC")$estF
+```
+
+```{r}
+# Add blood type information
+BloodFrac.m <- data.frame(BloodFrac.m)
+BloodFrac.m$barcodes <- rownames(BloodFrac.m)
+BloodFrac.m$Gran <- BloodFrac.m$Eosino + BloodFrac.m$Neutro
+pheno_df <- left_join(pheno_df, BloodFrac.m)
+```
+
+```{r}
+rm(RGSet_filtered)
+gc()
+```
+
+# SummarizedExperiment
+
+```{r}
+pheno_df <- pheno_df[match(colnames(norm_set), pheno_df$barcodes),]
+pheno_df <- data.frame(pheno_df)
+rownames(pheno_df) <- pheno_df$barcodes
+# Function convert_SE load from preprocessing.R
+se <- convert_SE(
+    object = norm_set,
+    pheno_df = pheno_df,
+    array = "EPIC", 
+    genome = "hg19"
+  )
+```
+
+```{r}
+# Save Summarized Experiment 
+saveRDS(se, file = file.path(dir.data.processed.all,"ADNI_all_sample_se.RDS"))
+write_csv(pheno_df %>% as.data.frame, 
+          file = file.path(dir.data.processed.all,"ADNI_all_sample_Se_colData.csv"))
+```
+
+## Outliers detection - PCA analysis
+
+Description: 
+
+1. Estimate standard deviation for each probe
+2. Select most variable probes (e.g. n = 50,000)
+3. PCA plot
+4. Filter outliers
+
+### Run PCA
+
+```{r}
+# Function samples_filter_pca load from preprocessing.R
+pc_obj <- samples_filter_pca(
+  se, 
+  save = T,
+  dir_save = dir.data.pca
+)
+pca <- pc_obj$pca
+adni.se <- pc_obj$SE
+```
+
+### PCA plot
+
+```{R pca_plot, eval = TRUE, warning = F}
+# Load PCA results
+pca <- readRDS(file.path(dir.data.pca,"PCA_model_usingBetas.RDS"))
+pheno_df <- read_csv(
+  file.path(dir.data.processed.all,"ADNI_all_sample_Se_colData.csv"))
+pheno_df$sample <- pheno_df$barcodes
+```
+
+```{r, eval = TRUE, warning = F}
+# Function plotPCA load from preprocessing.R
+byStatus <- plotPCA(
+  pca = pca,
+  dataset = "ADNI: beta values",
+  pheno = pheno_df,
+  group_char = "DX",
+  ntop = 50000
+)
+bySex <- plotPCA(
+  pca = pca,
+  dataset = "ADNI: beta values",
+  pheno = pheno_df,
+  group_char = "PTGENDER",
+  ntop = 50000
+)
+byPLATE <- plotPCA(
+  pca = pca,
+  dataset = "ADNI: beta values",
+  pheno = pheno_df,
+  group_char = "PlateNumber",
+  ntop = 50000
+)
+```
+
+```{r}
+print(nb_samples_after_pca) # 1643, obtained from function samples_filter_pca
+pheno_filtered <- pheno_df[match(colnames(adni.se), pheno_df$sample),]
+write_csv(
+  pheno_filtered,
+  file.path(dir.data.pca,"ADNI_colData_PCfiltered.csv")
+)
+```
+
+# Summary
+
+```{R, echo=FALSE}
+df.samples <- data.frame(
+  `Number of samples` =  c(
+    nb_samples_before_bs_filtered,
+    nb_samples_after_bs_filtered,
+    nb_samples_um_sex,
+    nb_samples_after_pca
+  ),
+  "Description" = c(
+    "Number of samples",
+    "Number of samples after filtering bisulfiteConversion >= 85",
+    "Number of samples after removing unmatched sex",
+    "Number of samples after PCA filtering"
+  )
+)    
+df.samples 
+```
+
+```{R, echo=FALSE}
+df.probes <- data.frame(
+  "Number of probes" =  c(
+    nb_probes_before_norm, 
+    nb_probes_after_p,
+    nb_probes_after_SNP[1],
+    nb_probes_after_SNP[2]
+  ),
+  "Description" = c(
+    "Total number of probes in raw data",
+    "Probes with detection P < 0.01 select in > 90% samples",
+    "Probes that start with cg",
+    "Only probes that no crosshyb, no X, no Y, mafcut = 0.01"
+  )
+)    
+df.probes 
+```
+
+```{r, echo = F}
+writexl::write_xlsx(
+  list(Samples = df.samples,
+       Probes = df.probes),
+  file.path(dir.data.processed.all, "ADNI_number_of_samples_probes_at_each_step.xlsx")
+)
+```
+
+```{r eval = T, echo = F}
+df.samples <- readxl::read_xlsx(
+  file.path(dir.data.processed.all, "ADNI_number_of_samples_probes_at_each_step.xlsx"),
+  sheet = 1
+)
+df.samples
+```
+
+```{r eval = T, echo = F}
+df.probes <- readxl::read_xlsx(
+  file.path(dir.data.processed.all, "ADNI_number_of_samples_probes_at_each_step.xlsx"),
+  sheet = 2
+)
+df.probes
+```
+
+# Checking the data
+
+```{R eval = T}
+adni.se <- readRDS(file.path(dir.data.pca, "SummarizedExperiment_PCfiltered.RDS"))
+```
+
+## show probes not starting with cg are removed
+
+```{R check_cg, eval = T}
+grep("cg",rownames(adni.se),invert = T)
+```
+
+## show probes on X/Y are removed
+
+```{R check_xy, eval = T}
+c("chrX", "chrY") %in% (seqnames(adni.se) %>% as.character())
+```
+
+## show probes with SNP with MAF \>= 0.01 and in the last 5bp were removed (compared with DMRcateData package probes)
+
+```{R eval = T}
+eh <- ExperimentHub()
+snpsall <- eh[["EH3130"]]
+any(snpsall$probe[snpsall$mafs > 0.01 & snpsall$distances <= 5] %>% as.character() %in% rownames(adni.se)) 
+crosshyb <- eh[["EH3129"]]
+any(crosshyb %in% rownames(adni.se))
+XY.probes <- eh[["EH3131"]]
+any(XY.probes %in% rownames(adni.se)) 
+```
+
+## show quantiles for each sample is the same
+
+```{R quantile_box_plot, eval = T}
+boxplot(assay(adni.se[,1:10]))
+plyr::adply(assay(adni.se[,1:10]),.margins = 2,.fun = function(x){quantile(x)})
+```
+
+## check cell type proportions adds up to 1
+
+```{R eval = T}
+table(rowSums(colData(adni.se)[,c("B","NK","CD4T","CD8T","Mono","Neutro","Eosino")] %>% as.matrix()))
+```
+
+## check outliers samples are not in datset anymore
+
+```{R eval = T}
+outliers <- readr::read_csv(paste0(dir.data.pca, "/PCs_usingBetas.csv"),col_types = readr::cols()) %>%
+  dplyr::filter(outlier_PC1 == 1 | outlier_PC2 == 1) %>% pull(`...1`) 
+head(outliers)
+head(colnames(adni.se))
+any(outliers %in% colnames(adni.se))
+```
+
+# Select the samples with baseline = CN
+
+```{r}
+adni.se <- readRDS(file.path(dir.data.pca, "SummarizedExperiment_PCfiltered.RDS"))
+```
+
+```{r}
+# Select samples at the first visit
+pheno <- colData(adni.se) %>% as.data.frame()
+pheno_baseline <- pheno %>%
+  group_by(RID) %>% 
+  slice_min(age_at_visit)
+
+# select CN samples at baseline
+pheno_baseline_cn <- pheno_baseline %>%
+  filter(DX == "CN")
+rid <- pheno_baseline_cn$RID
+length(rid) # 216
+
+# Read all clinical data and get the last diagnosis results
+clinical <- readr::read_csv(file.path(dir.data.pheno.raw,"ADNIMERGE_downloaded_3-1-2021.csv"))
+clinical_filter <- clinical %>%
+  dplyr::select(RID, VISCODE, COLPROT,EXAMDATE, DX)
+clinical_filter <- clinical_filter[!is.na(clinical_filter$DX),] # rm NA
+clinical_filter <- clinical_filter %>%
+  filter(RID %in% rid) %>%
+  group_by(RID) %>%
+  slice_max(EXAMDATE)
+
+# Read latest diagnosis file and get the latest diagnosis results
+diagnosis <- read_csv(
+  file.path(dir.data.pheno.raw, "DXSUM_PDXCONV_ADNIALL_downloaded_12-11-2022.csv")
+)
+diagnosis_filter <- diagnosis %>%
+  filter(RID %in% rid) 
+diagnosis_filter$EXAMDATE <- as.Date(diagnosis_filter$EXAMDATE, "%Y/%m/%d") 
+diagnosis_filter <- diagnosis_filter %>%
+  group_by(RID) %>%
+  slice_max(EXAMDATE) %>% 
+  mutate(DX2 = ifelse(DIAGNOSIS == 1, "CN", ifelse(DIAGNOSIS == 2, "MCI", ifelse(DIAGNOSIS == 3, "Dementia", NA))),
+         .keep = "unused")
+diagnosis_filter <- diagnosis_filter[match(clinical_filter$RID, diagnosis_filter$RID),]
+
+# update the last diagnosis results to latest diagnosis results
+clinical_filter$DX2 <- clinical_filter$DX
+clinical_filter$DX2[!is.na(diagnosis_filter$DX2)] <- diagnosis_filter$DX2[!is.na(diagnosis_filter$DX2)]
+clinical_filter$EXAMDATE2 <- clinical_filter$EXAMDATE
+clinical_filter$EXAMDATE2[!is.na(diagnosis_filter$DX2)] <- diagnosis_filter$EXAMDATE[!is.na(diagnosis_filter$DX2)]
+
+# mutate DX with non-Dementia & Dementia samples at last follow up
+pheno_baseline_cn$DX2 <- clinical_filter$DX2[match(pheno_baseline_cn$RID, clinical_filter$RID)]
+pheno_baseline_cn$EXAMDATE2 <- clinical_filter$EXAMDATE2[match(pheno_baseline_cn$RID, clinical_filter$RID)]
+survdate <- interval (
+  pheno_baseline_cn$EXAMDATE,
+  pheno_baseline_cn$EXAMDATE2) %>% 
+  time_length(unit = "days")
+pheno_baseline_cn$SurvDays <- survdate
+
+# match to adni_se
+adni_se_surv <- adni.se[,match(pheno_baseline_cn$RID, adni.se$RID)]
+colData(adni_se_surv) <- DataFrame(pheno_baseline_cn)
+colnames(adni_se_surv) <- adni_se_surv$barcodes
+
+saveRDS(
+  adni_se_surv,
+  file.path(dir.data.pca, "ADNI_all_sample_cn_baseline_surv.rds")
+)
+```
+
+# Batch effect correction with BEclear
+
+```{r}
+adni_se_surv <- readRDS(
+   file.path(dir.data.pca, "ADNI_all_sample_cn_baseline_surv.rds")
+)
+```
+
+```{r}
+library(BEclear)
+source(file.path(dir.base, "code/Utility/BE.R"))
+dir.results <- file.path(dir.base, "analysis_results", cohort)
+dir.results.data <- file.path(dir.base, "datasets", cohort, "BEclear") 
+dir.results.batch <- file.path(dir.base, "analysis_results/BEclear")
+```
+
+```{r}
+betaMat <- assay(adni_se_surv)
+pheno_df <- colData(adni_se_surv) %>% data.frame()
+adni_se_surv$PlateNumber <- as.factor(adni_se_surv$PlateNumber)
+# Function rm_batch_BE load from BE.R
+rm_batch_BE(
+  se = adni_se_surv,
+  batch_var = "PlateNumber", 
+  sample_var = "barcodes", 
+  cores = 10, 
+  prefix = "ADNI_Batch", 
+  dir.data = dir.results.data, 
+  dir.results = dir.results.batch,
+)
+```
+
+```{r}
+results_corrected <- load(
+  file.path(dir.results.data, "ADNI_Batch_BE_predicted.rda")
+)
+```
+
+```{r}
+# Test if the batch still have effects with corrected beta matrix
+bat <- BEclear::calcBatchEffects(predicted, pheno_df, BPPARAM = MulticoreParam(10))
+sum <- calcSummary(bat$med, pvalues = bat$pval)
+scores <- calcScore(predicted, pheno_df, summary = sum)
+writexl::write_xlsx(
+  list(summary = sum,
+       score = scores),
+  file.path(dir.results.batch, "ADNI_Batch_corrected_summ_scores.csv")
+)
+```
+
+```{r}
+pheno_df$DEM_STATUS <- ifelse(pheno_df$DX2 == "Dementia", 1, 0)
+adni_se_corrected <- convert_SE(
+  pheno_df = pheno_df,
+  object = predicted,
+  array = "EPIC",
+  genome = "hg19"
+)
+saveRDS(
+  adni_se_corrected,
+  file.path(dir.results.data, "ADNI_BEclear_se.rds")
+)
+```
+
+```{r}
+rm(adni_se_surv)
+rm(results_corrected)
+gc()
+```
+
+# Session Information
+
+<details>
+  <summary>**Session Info**</summary>
+```{r session}
+sessionInfo()
+```
+</details>
+
+
