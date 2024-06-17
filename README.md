@@ -54,7 +54,7 @@ To assess the correlation of dementia-associated CpGs and DMRs methylation level
 
 **Covariate analysis**: We evaluated if dementia risk factors would likely confound the DNA methylation to dementia associations we observed. To this end, we first performed regression analysis to assess the association between dementia-associated CpGs and dementia risk factors collected by the Framingham study.
 
-**Family structure analysis**: To evaluate the impact of family structure in the discovery of significant CpGs, ww compared the results a model that accounts for family relationships in the Cox regression model using a kinship matrix. 
+**Family structure analysis**: To evaluate the impact of family structure in the discovery of significant CpGs, we compared the results of a model that accounts for family relationships in the Cox regression model using a kinship matrix. 
 
 | File and folder                                              | Description                        |
 | ------------------------------------------------------------ | ---------------------------------- |
