@@ -1,5 +1,5 @@
 # **Blood DNA Methylation Signature for Incident Dementia: Evidence from Longitudinal Cohorts** 
-Wei Zhang, Juan I. Young, Lissette Gomez, Michael A. Schmidt, David Lukacsovich, Achintya Varma, Brian Kunkle, X. Steven Chen, Eden R. Martin, Lily Wang
+Wei Zhang, Juan I. Young, Lissette Gomez, Michael A. Schmidt, David Lukacsovich, Brian Kunkle, X. Steven Chen, Eden R. Martin, Lily Wang
 
 ## Discription
 
