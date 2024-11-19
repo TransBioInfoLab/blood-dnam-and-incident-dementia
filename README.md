@@ -60,6 +60,7 @@ To assess the correlation of dementia-associated CpGs and DMRs methylation level
 -  To evaluate the impact of family structure in the discovery of significant CpGs, we compared the results a model that accounts for family relationships in the Cox regression model using a kinship matrix. 
 
 - The coMethDM[^3] software was used to evaluate the robustness of genomic regions defined by the 44 DMRs identified by comb-p for their association with time to incident dementia.
+
 | File and folder                                              | Description                        |
 | ------------------------------------------------------------ | ---------------------------------- |
 | [code/covariates_analysis](https://github.com/TransBioInfoLab/blood-dnam-and-incident-dementia/blob/main/code/covariates_analysis) | Code for covariate analysis        |
