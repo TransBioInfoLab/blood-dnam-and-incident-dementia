@@ -15,23 +15,26 @@ DNA methylation samples from both FHS and ADNI were measured using the same Illu
 | ------------------------------------------------------------ | ------------------------------------------------- |
 | [code/ADNI/preprocessing](https://github.com/TransBioInfoLab/blood-dnam-and-incident-dementia/blob/main/code/ADNI/preprocessing) | Code for preprocessing of ADNI DNAm blood samples |
 | [code/Framingham/preprocessing](https://github.com/TransBioInfoLab/blood-dnam-and-incident-dementia/blob/main/code/Framingham/preprocessing) | Code for preprocessing of FHS9 DNAm blood samples |
-### 2. Association of DNA methylation at individual CpGs with dementia
+
+### 2. Main analysis
+
+#### Association of DNA methylation at individual CpGs with dementia
 
 To evaluate the relationship between incident dementia and DNA methylation, we conducted Cox proportional regression analyses on both FHS and ADNI datasets separately, via the coxph function in the survival R package.  
 
-| File and folder                                              | Description                           |
-| ------------------------------------------------------------ | ------------------------------------- |
-| [code/ADNI/cpg_test/cox_cpg_test_ADNI.Rmd](https://github.com/TransBioInfoLab/blood-dnam-and-incident-dementia/blob/main/code/ADNI/cpg_test/cox_cpg_test_ADNI.Rmd) | Code for individual CpGs test of ADNI |
-| [code/Framingham/cpg_test/cox_cpg_test_FHS9.Rmd](https://github.com/TransBioInfoLab/blood-dnam-and-incident-dementia/blob/main/code/Framingham/cpg_test/cox_cpg_test_FHS9.Rmd) | Code for individual CpGs test of FHS9 |
+| File and folder                                              | Description                                                  |
+| ------------------------------------------------------------ | ------------------------------------------------------------ |
+| [code/ADNI/cpg_test/cox_cpg_test_ADNI.Rmd](https://github.com/TransBioInfoLab/blood-dnam-and-incident-dementia/blob/main/code/ADNI/cpg_test/cox_cpg_test_ADNI.Rmd) | Code for individual CpGs test of ADNI (under `Main analysis` section) |
+| [code/Framingham/cpg_test/cox_cpg_test_FHS9.Rmd](https://github.com/TransBioInfoLab/blood-dnam-and-incident-dementia/blob/main/code/Framingham/cpg_test/cox_cpg_test_FHS9.Rmd) | Code for individual CpGs test of FHS9 (under `Main analysis` section) |
 
-### 3. Meta-analysis
+#### Meta-analysis
 
 To meta-analyze individual CpG results across both the FHS and ADNI datasets, we used the inverse-variance weighted fixed-effects model, implemented in the meta R package.
 
-| File and folder                                              | Description            |
-| ------------------------------------------------------------ | ---------------------- |
-| [code/meta_analysis/meta_analysis.Rmd](https://github.com/TransBioInfoLab/blood-dnam-and-incident-dementia/blob/main/code/meta_analysis/meta_analysis.Rmd) | Code for meta-analysis |
-### 4. Pathway analysis
+| File and folder                                              | Description                                            |
+| ------------------------------------------------------------ | ------------------------------------------------------ |
+| [code/meta_analysis/meta_analysis.Rmd](https://github.com/TransBioInfoLab/blood-dnam-and-incident-dementia/blob/main/code/meta_analysis/meta_analysis.Rmd) | Code for meta-analysis (under `Main analysis` section) |
+### 3. Pathway analysis
 
 To identify biological pathways enriched with significant DNA methylation differences, we used the methylRRA function in the methylGSA R package[^1].
 
@@ -39,7 +42,7 @@ To identify biological pathways enriched with significant DNA methylation differ
 | ------------------------------------------------------------ | ------------------------- |
 | [code/pathway_analysis](https://github.com/TransBioInfoLab/blood-dnam-and-incident-dementia/blob/main/code/pathway_analysis) | Code for pathway analysis |
 
-### 5. Integrative analyses with gene expression, genetic variants, and brain-to-blood correlations
+### 4. Integrative analyses with gene expression, genetic variants, and brain-to-blood correlations
 
 To evaluate the effect of DNA methylation on the expression of nearby genes, we overlapped our dementia-associated CpGs, including both significant individual CpGs and those located within DMRs, with eQTm analysis results in Supplementary Tables 2 and 3 of Yao et al (2021)[^2].
 
@@ -50,24 +53,35 @@ To assess the correlation of dementia-associated CpGs and DMRs methylation level
 | [code/check_overlap](https://github.com/TransBioInfoLab/blood-dnam-and-incident-dementia/blob/main/code/check_overlap) | Code for integrative analyses        |
 | [code/brain_blood_corr](https://github.com/TransBioInfoLab/blood-dnam-and-incident-dementia/blob/main/code/brain_blood_corr) | Code for brain-to-blood correlations |
 
-### 6. Sensitivity analysis
+### 5. Sensitivity analysis
 
-**Covariate analysis**: We evaluated if dementia risk factors would likely confound the DNA methylation to dementia associations we observed. To this end, we first performed regression analysis to assess the association between dementia-associated CpGs and dementia risk factors collected by the Framingham study.
+-  We evaluated if dementia risk factors would likely confound the DNA methylation to dementia associations we observed. To this end, we first performed regression analysis to assess the association between dementia-associated CpGs and dementia risk factors collected by the Framingham study.
 
+<<<<<<< Updated upstream
 **Family structure analysis**: To evaluate the impact of family structure in the discovery of significant CpGs, we compared the results of a model that accounts for family relationships in the Cox regression model using a kinship matrix. 
+=======
+-  To evaluate the impact of family structure in the discovery of significant CpGs, ww compared the results a model that accounts for family relationships in the Cox regression model using a kinship matrix. 
+
+- The coMethDM[^3] software was used to evaluate the robustness of genomic regions defined by the 44 DMRs identified by comb-p for their association with time to incident dementia.
+>>>>>>> Stashed changes
 
 | File and folder                                              | Description                        |
 | ------------------------------------------------------------ | ---------------------------------- |
 | [code/covariates_analysis](https://github.com/TransBioInfoLab/blood-dnam-and-incident-dementia/blob/main/code/covariates_analysis) | Code for covariate analysis        |
 | [code/Framingham/cpg_test/kinship.Rmd](https://github.com/TransBioInfoLab/blood-dnam-and-incident-dementia/blob/main/code/Framingham/cpg_test/kinship.Rmd) | Code for family structure analysis |
+| [code/DMR/coMethDMR.Rmd](https://github.com/TransBioInfoLab/blood-dnam-and-incident-dementia/blob/main/code/DMR/coMethDMR.Rmd) | Code for DMR analysis |
 
-### 7. External validation
+- Include smoking status as a covariate variable: The code for this analysis can be found in the Main Analysis section under the `Sensitivity analysis 1: smoking`.
+- Exclude CN subjects with strong biomarker evidence for AD, but short follow-up durations: The code for this analysis can be found in the Main Analysis section under the `Sensitivity analysis 2: exclude high-risk individual`.
+- AD dementia: The code for this analysis can be found in the Main Analysis section under the `Sensitivity analysis 3: AD in Dementia`.
 
-The external validation analysis of the methylation risk scores (MRS) included 491 whole blood DNA methylation samples from the AIBL study and 171 whole blood DNA methylation samples from the cross-European AddNeuromed study, which were downloaded from the GEO database (accession: GSE153712 and GSE144858). The preprocessing of DNA methylation samples from AIBL and AddNeuromed were previously described in Silva et al. (2022)[^3].
+### 7. Out-of-sample validation of Methylation Risk Score
+
+We performed an out-of-sample validation using the ADNI dataset. For each subject at baseline, the MRS was computed by summing the methylation M-values for the 151 CpGs weighted by coefficients estimated from the ridge regression model described above. We then performed Cox regression analyses on the ADNI dataset to evaluate the association between baseline MRS and disease progression. This analysis was performed using the coxph function in the survival R package.
 
 | File and folder                                              | Description           |
 | ------------------------------------------------------------ | --------------------- |
-| [code/MRS_analysis](https://github.com/TransBioInfoLab/blood-dnam-and-incident-dementia/blob/main/code/MRS_analysis) | Code for MRS analysis |
+| [code/MRS_analysis](https://github.com/TransBioInfoLab/blood-dnam-and-incident-dementia/blob/main/code/MRS_model) | Code for MRS analysis |
 
 ## For reproducible research
 
@@ -81,5 +95,5 @@ Data used in the preparation of this article were obtained from the Alzheimer’
 
 [^1]: Ren, X. & Kuan, P.F. methylGSA: a Bioconductor package and Shiny app for DNA methylation data length bias adjustment in gene set testing. *Bioinformatics* **35**, 1958-1959 (2019)
 [^2]: Yao, C. *et al.* Epigenome-wide association study of whole blood gene expression in Framingham Heart Study participants provides molecular insight into the potential role of CHRNA5 in cigarette smoking-related lung diseases. *Clin Epigenetics* **13**, 60 (2021)  
-[^3]: T, C.S. *et al.* Cross-tissue analysis of blood and brain epigenome-wide association studies in Alzheimer's disease. *Nat Commun* **13**, 4852 (2022)
+[^3]: Gomez, L. et al. coMethDMR: accurate identification of co-methylated and differentially methylated regions in epigenome-wide association studies with continuous phenotypes. Nucleic Acids Res 47, e98 (2019).
 

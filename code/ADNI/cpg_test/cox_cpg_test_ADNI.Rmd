@@ -21,7 +21,7 @@ editor_options:
 ---
 
 ```{r setup, include=FALSE}
-knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_chunk$set(echo = TRUE, message = F, warning = F)
 cohort <- "ADNI"
 dir.base <- "../../.."
 dir.results <- file.path(dir.base, "analysis_results", cohort, "cox")
@@ -47,10 +47,10 @@ betaMat <- assay(adni_se_corrected)
 pheno_df <- colData(adni_se_corrected) %>% 
   as.data.frame() 
 
-pheno_df <- write_csv(
-  pheno_df,
-  file.path(dir.base, "../DATASETS", cohort, "Phenotype/processed/all_sample/ADNI_cn_baseline_first_visit_pheno.csv")
-)
+# pheno_df <- write_csv(
+#   pheno_df,
+#   file.path(dir.base, "../DATASETS", cohort, "Phenotype/processed/all_sample/ADNI_cn_baseline_first_visit_pheno.csv")
+# )
 ```
 
 # Check distribution
@@ -70,9 +70,41 @@ pheno_df %>%
 # education
 mean(pheno_df$PTEDUCAT, na.rm = T)
 sd(pheno_df$PTEDUCAT, na.rm = T)
+# smoking
+medhist <- read_csv(
+  file.path(dir.base, "../DATASETS", cohort, "Phenotype/raw/MEDHIST.csv")
+)
+medhist <- medhist %>%
+  dplyr::select(RID, MH16SMOK) %>% 
+  group_by(RID) %>%
+  slice_max(MH16SMOK, with_ties = F) %>% # For each participant (RID), if any record indicates a history of smoking (MH16SMOK = 1), that row is retained.
+  ungroup()
+pheno_df <- left_join(pheno_df, medhist)
 ```
 
-# Survival analysis
+## Tests
+
+```{r}
+plyr::ldply(
+  c("SurvDays", "age_at_visit",  "PTGENDER", "PTEDUCAT", "MH16SMOK"),
+  .fun = function(var) {
+    if(!var %in% c("PTGENDER", "MH16SMOK")) {
+      fo <- as.formula(paste0(var, "~ DEM_STATUS"))
+      df <- pheno_df %>% rstatix::wilcox_test(fo) %>% 
+        dplyr::select(var = .y., p)
+    } else {
+      df <- pheno_df %>% rstatix::freq_table(var, "DEM_STATUS")
+      mat <- as.table(matrix(df$n, nrow = 2, ncol = 2))
+      dimnames(mat) <- list(DEM_STATUS = df$DEM_STATUS[1:2],
+                            GROUP = df[[var]][c(1,3)])
+      df <- rstatix::fisher_test(mat) %>%
+        dplyr::mutate(var = var) %>%
+        dplyr::select(var, p)
+    }
+    df
+  }
+)
+```
 
 ```{r}
 celltype <- c("B", "NK", "CD4T", "Mono", "Gran")
@@ -89,6 +121,85 @@ pca_cell <- prcomp(
   pheno[,celltype]
 )
 ```
+
+## Correlation between PC and covariates
+
+```{r}
+# compute sds for each row
+sds <- matrixStats::rowSds(betaMat)
+sdsSorted <- order(sds, decreasing = TRUE)
+
+# order by most variable probes on top
+beta <- betaMat[sdsSorted ,]
+pc <- irlba::irlba(t(beta[1:50000,]))
+pl <- plyr::llply(
+  c("SurvDays", "age_at_visit",  "PTGENDER", "PTEDUCAT", "MH16SMOK"),
+  .fun = function(var) {
+    print(var)
+    if(!var %in% c("PTGENDER", "MH16SMOK")) {
+      if(var == "SurvDays") {
+        xlab <- "Follow up period in years"
+        pheno_df$SurvDays <- pheno_df$SurvDays/365
+      } 
+      if(var == "age_at_visit") {
+        xlab <- "Age"
+      }
+      if(var == "PTEDUCAT") {
+        xlab <- "Education"
+      }
+      if(var != "PTEDUCAT") {
+        
+        ggpubr::ggscatter(
+          data = data.frame(pheno_df, PC = pc$u[,1]),
+          x = var,
+          y = "PC",
+          cor.coef = T,
+          add = "reg.line",
+          ylab = "First PC of ADNI beta values",
+          xlab = xlab,
+          add.params = list(color = "navy"),
+          cor.method = "spearman",
+          cor.coeff.args = list(label.y.npc = "top")
+        )
+      } else {
+        ggpubr::ggboxplot(
+          data = data.frame(pheno_df, PC = pc$u[,1]),
+          x = var,
+          y = "PC",
+          fill = "grey",
+          palette = "npg",
+          ylab = "First PC of ADNI beta values",
+          xlab = xlab
+        ) + ggpubr::stat_compare_means(method = "kruskal.test", label.y.npc = "bottom") + 
+        guides(fill = "none")
+      }
+      
+    } else {
+      if (var == "MH16SMOK") xlab <- "Smoking History"
+      if (var == "PTGENDER") xlab <- "Gender"
+      ggpubr::ggboxplot(
+        data = data.frame(pheno_df, PC = pc$u[,1]),
+        x = var,
+        y = "PC",
+        fill = var,
+        palette = "npg",
+        ylab = "First PC of ADNI beta values",
+        xlab = xlab
+      ) + ggpubr::stat_compare_means(method = "wilcox.test", label.y.npc = "bottom") + 
+        guides(fill = "none")
+    }
+  }
+)
+ggpubr::ggarrange(plotlist = pl, nrow = 3, ncol = 2)
+ggsave(
+  filename = file.path(dir.results, "ADNI_beta_pc_vs_covariates.pdf"),
+  height = 12,
+  width = 10
+)
+```
+
+
+# Main analysis
 
 ## Analysis with firt two PCs of cell type proportions
 
@@ -117,7 +228,7 @@ results <- read_csv(file.path(
 
 ## Add annotation
 
-```{r}
+```{r eval = F}
 library(IlluminaHumanMethylationEPICanno.ilm10b4.hg19)
 # This function is load from annotation_and_bacon.R
 results_anno <- annotate_results(results,
@@ -145,6 +256,235 @@ results_bacon <- bacon_adj(
   save = T,
   dir.save = file.path(dir.results),
   prefix = "ADNI_adjust_celltypes_first_2pc_single_cpg_cox")
+```
+
+# Sensitivity analysis 1: smoking
+
+```{r eval = F}
+# This function is load from cpg_test.R
+results <- cox_coef(
+  beta = betaMat,
+  pheno = data.frame(pheno, pca_cell$x),
+  time_var = "SurvDays",
+  event_var = "DEM_STATUS",
+  adjust_var = c("age_at_visit", "PTGENDER", "PC1", "PC2", "MH16SMOK"),
+  scale = T,
+  fdr_method = "fdr",
+  save = T,
+  dir.save = file.path(dir.results),
+  prefix = "ADNI_adjust_celltypes_first_2pc_smokhist",
+  cores = 20
+)
+```
+
+## Add annotation
+
+```{r eval = F}
+library(IlluminaHumanMethylationEPICanno.ilm10b4.hg19)
+# This function is load from annotation_and_bacon.R
+results_anno <- annotate_results(results,
+                                 array = "EPIC",
+                                 dir.data.aux = dir.data.aux,
+                                 dir.save = dir.results,
+                                 prefix = "ADNI_adjust_celltypes_first_2pc_smokhist_single_cpg_cox")
+```
+
+## Bacon correction
+
+```{r message = F, echo = F}
+results_anno <- read_csv(file.path(
+  dir.results, "ADNI_adjust_celltypes_first_2pc_smokhist_single_cpg_cox_annotated_results.csv"
+))
+```
+
+```{r}
+# This function is load from annotation_and_bacon.R
+results_bacon <- bacon_adj(
+  data = results_anno,
+  est_var = "coef",
+  z_var = "z",
+  std_var = "se_coef",
+  save = T,
+  dir.save = file.path(dir.results),
+  prefix = "ADNI_adjust_celltypes_first_2pc_smokhist_single_cpg_cox")
+```
+
+# Sensitivity analysis 2: exclude high-risk individual
+
+```{r}
+followup_qt <- quantile(pheno_df$SurvDays)
+tau_qt <- quantile(as.numeric(pheno_df$TAU), na.rm = T)
+pheno_df <- pheno_df %>% 
+  filter((DEM_STATUS == 0 & SurvDays > followup_qt[2]) | (DEM_STATUS == 0 & TAU < tau_qt[4]) | DEM_STATUS == 1)
+beta <- betaMat[,pheno_df$barcodes]
+```
+
+```{r eval = F}
+# This function is load from cpg_test.R
+results <- cox_coef(
+  beta = beta,
+  pheno = pheno_df,
+  time_var = "SurvDays",
+  event_var = "DEM_STATUS",
+  adjust_var = c("age_at_visit", "PTGENDER", "PC1", "PC2"),
+  scale = T,
+  fdr_method = "fdr",
+  save = T,
+  dir.save = file.path(dir.results),
+  prefix = "ADNI_adjust_celltypes_first_2pc_rm_highrisk",
+  cores = 20
+)
+```
+
+## Add annotation
+
+```{r eval = F}
+library(IlluminaHumanMethylationEPICanno.ilm10b4.hg19)
+# This function is load from annotation_and_bacon.R
+results_anno <- annotate_results(results,
+                                 array = "EPIC",
+                                 dir.data.aux = dir.data.aux,
+                                 dir.save = dir.results,
+                                 prefix = "ADNI_adjust_celltypes_first_2pc_rm_highrisk_single_cpg_cox")
+```
+
+## Bacon correction
+
+```{r message = F, echo = F}
+results_anno <- read_csv(file.path(
+  dir.results, "ADNI_adjust_celltypes_first_2pc_rm_highrisk_single_cpg_cox_annotated_results.csv"
+))
+```
+
+```{r}
+# This function is load from annotation_and_bacon.R
+results_bacon <- bacon_adj(
+  data = results_anno,
+  est_var = "coef",
+  z_var = "z",
+  std_var = "se_coef",
+  save = T,
+  dir.save = file.path(dir.results),
+  prefix = "ADNI_adjust_celltypes_first_2pc_rm_highrisk_single_cpg_cox")
+```
+
+# Sensitivity analysis 3: AD in Dementia
+
+```{r}
+dxsum <- read_csv(
+  file.path(dir.data.aux, "../ADNI/Phenotype/raw/DXSUM_PDXCONV_ADNIALL_downloaded_12-11-2022.csv")
+)
+dxsum <- dxsum %>% 
+  dplyr::select(RID, EXAMDATE, DIAGNOSIS, DXDDUE) %>% 
+  group_by(RID) %>% 
+  slice_max(as.Date(EXAMDATE))
+dxsum$EXAMDATE <- NULL
+pheno_df <- left_join(
+  pheno, dxsum
+)
+table(pheno_df$DXDDUE)
+```
+
+```{r}
+pheno_df$AD_STATUS <- ifelse(
+  pheno_df$DXDDUE == 1, 1, 0
+)
+pheno_df$AD_STATUS[is.na(pheno_df$AD_STATUS)] <- 0
+pheno_df <- data.frame(pheno_df, pca_cell$x)
+```
+
+```{r eval = F}
+# This function is load from cpg_test.R
+results <- cox_coef(
+  beta = betaMat,
+  pheno = pheno_df,
+  time_var = "SurvDays",
+  event_var = "AD_STATUS",
+  adjust_var = c("age_at_visit", "PTGENDER", "PC1", "PC2"),
+  scale = T,
+  fdr_method = "fdr",
+  save = T,
+  dir.save = file.path(dir.results),
+  prefix = "ADNI_adjust_celltypes_first_2pc_AD",
+  cores = 30
+)
+```
+
+## Add annotation
+
+```{r eval = F}
+library(IlluminaHumanMethylationEPICanno.ilm10b4.hg19)
+# This function is load from annotation_and_bacon.R
+results_anno <- annotate_results(results,
+                                 array = "EPIC",
+                                 dir.data.aux = dir.data.aux,
+                                 dir.save = dir.results,
+                                 prefix = "ADNI_adjust_celltypes_first_2pc_AD_single_cpg_cox")
+```
+
+## Bacon correction
+
+```{r message = F, echo = F}
+results_anno <- read_csv(file.path(
+  dir.results, "ADNI_adjust_celltypes_first_2pc_rm_highrisk_single_cpg_cox_annotated_results.csv"
+))
+```
+
+```{r}
+# This function is load from annotation_and_bacon.R
+results_bacon <- bacon_adj(
+  data = results_anno,
+  est_var = "coef",
+  z_var = "z",
+  std_var = "se_coef",
+  save = T,
+  dir.save = file.path(dir.results),
+  prefix = "ADNI_adjust_celltypes_first_2pc_AD_single_cpg_cox")
+```
+
+# Compare
+
+```{r}
+results1 <- read_csv(
+  file.path(dir.results, "ADNI_adjust_celltypes_first_2pc_single_cpg_cox_bacon_correction.csv")
+)
+results2 <- read_csv(
+  file.path(dir.results, "ADNI_adjust_celltypes_first_2pc_smokhist_single_cpg_cox_bacon_correction.csv")
+)
+results3 <- read_csv(
+  file.path(dir.results, "ADNI_adjust_celltypes_first_2pc_rm_highrisk_single_cpg_cox_bacon_correction.csv")
+)
+results4 <- read_csv(
+  file.path(dir.results, "ADNI_adjust_celltypes_first_2pc_AD_single_cpg_cox_bacon_correction.csv")
+)
+```
+
+```{r fig.width = 8, fig.height = 8}
+ls <- list(
+  "Remove high-risk\nindividuals" = results3 %>% filter(pValue.bacon < 1e-05) %>% pull(cpg),
+  Original = results1 %>% filter(pValue.bacon < 1e-05) %>% pull(cpg),
+  Sensitivity = results2 %>% filter(pValue.bacon < 1e-05) %>% pull(cpg),
+  "AD cox regression" = results4 %>% filter(pValue.bacon < 1e-05) %>% pull(cpg)
+)
+ggvenn::ggvenn(ls, set_name_size = 3)
+```
+
+```{r}
+results <- read_csv(
+  file.path(dir.results, "../../meta_analysis/meta_analysis_FHS9_ADNI_sig_results_annotated.csv")
+)
+sig.cpg <- results1$cpg[results$fdr < .05]
+df <- results %>% filter(fdr < .05)
+df2 <- results4 %>% 
+  dplyr::select(cpg, Estimate.bacon, StdErr.bacon, pValue.bacon, fdr.bacon) %>% 
+  rename_with( ~paste0("AD_", .x), contains("bacon"))
+df <- left_join(df, df2)
+df
+
+write_csv(
+  df,
+  file.path(dir.results, "ADNI_sig_cpg_dem_vs_ad.csv")
+)
 ```
 
 # Session Information

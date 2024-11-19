@@ -122,10 +122,12 @@ calc_corr <- function(beta_list, common_cpg, method = "spearman"){
 # ===================================================================================================
 # meta analysis with metagen
 # ===================================================================================================
-meta_wrapper <- function(results_list, effect, se, full_table = T, sm = "HR"){
+meta_wrapper <- function(results_list, effect, se, full_table = T, sm = "HR", test_var = "cpg",
+                         select_var = c("seqnames", "start", "end", "width", "Islands.UCSC.Relation_to_Island",
+                                        "UCSC_RefGene_Name", "UCSC_RefGene_Group", "GREAT_annotation")){
   
   # Get cpgs that have at least two study
-  cpg <- unlist(purrr::map(results_list, ~.[["cpg"]]))
+  cpg <- unlist(purrr::map(results_list, ~.[[test_var]]))
   cpg_tb <- table(cpg)
   cpg_select <- names(cpg_tb[cpg_tb > 1])
   
@@ -135,16 +137,18 @@ meta_wrapper <- function(results_list, effect, se, full_table = T, sm = "HR"){
     i = cpg_select,
     .errorhandling = "remove"
   ) %dopar% {
-    dat <- purrr::map(results_list, ~.[.$cpg == i,])
+    dat <- purrr::map(results_list, ~.[.[[test_var]] == i,])
     dat <- purrr::reduce(dat, rbind) 
     dat <- purrr::compact(dat)
     
     # Meta analysis
     meta_fn(dat = dat, 
-               effect = effect,
-               se = se,
-               full_table = full_table,
-               sm = sm)
+            effect = effect,
+            se = se,
+            full_table = full_table,
+            sm = sm,
+            test_var = test_var,
+            select_var = select_var)
   }
   
   doParallel::stopImplicitCluster()
@@ -156,7 +160,10 @@ meta_wrapper <- function(results_list, effect, se, full_table = T, sm = "HR"){
   
 }
 
-meta_fn <- function(dat, effect, se, full_table = T, sm = "HR", return_metagen = F, ...){
+meta_fn <- function(dat, effect, se, full_table = T, sm = "HR", return_metagen = F, test_var = "cpg", 
+                    select_var = c("seqnames", "start", "end", "width", "Islands.UCSC.Relation_to_Island",
+                                   "UCSC_RefGene_Name", "UCSC_RefGene_Group", "GREAT_annotation"),
+                    ...){
   
   f <- metagen(
     TE = dat[[effect]],
@@ -166,7 +173,7 @@ meta_fn <- function(dat, effect, se, full_table = T, sm = "HR", return_metagen =
   )
   
   mod_coef <- data.frame(
-    cpg = unique(dat$cpg),
+    cpg = unique(dat[[test_var]]),
     estimate = f$TE.fixed,
     se = f$seTE.fixed,
     pVal.fixed = f$pval.fixed,
@@ -176,13 +183,12 @@ meta_fn <- function(dat, effect, se, full_table = T, sm = "HR", return_metagen =
                        collapse = ""),
     k = nrow(dat)
   )
-  
+  colnames(mod_coef)[1] <- test_var
   if(full_table) {
     # column to retain
     dat$warning <- NULL
     dat$study <- NULL
-    col_names <- c("cpg", "seqnames", "start", "end", "width", "Islands.UCSC.Relation_to_Island",
-                   "UCSC_RefGene_Name", "UCSC_RefGene_Group", "GREAT_annotation")
+    col_names <- c(test_var, select_var)
     dat_wider <- pivot_wider(
       dat, id_cols = all_of(col_names),
       names_from = study_id,
@@ -190,7 +196,7 @@ meta_fn <- function(dat, effect, se, full_table = T, sm = "HR", return_metagen =
       values_from = colnames(dat)[! colnames(dat) %in% c(col_names, "study_id")]
     )
     
-    mod_coef <- left_join(mod_coef, dat_wider, by = "cpg")
+    mod_coef <- left_join(mod_coef, dat_wider, by = test_var)
   } 
   
   if(return_metagen) {

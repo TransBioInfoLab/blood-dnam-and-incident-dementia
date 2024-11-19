@@ -10,6 +10,8 @@ library(gtable)
 library(grid)
 library(cowplot)
 library(meta)
+library(survminer)
+library(survival)
 # =================================================================================================== 
 # Manhattan plot
 # =================================================================================================== 
@@ -73,7 +75,7 @@ plot_manh <- function(results, annotated, colored, thres = 0.05, top_n = 10) {
     # Add label using ggrepel to avoid overlapping
     geom_text_repel(data=subset(don, is_annotate=="yes"), 
                      aes(label=GREAT), 
-                     size=4.5, fontface = "bold") +
+                     size=4.5) +
     xlab("Chromosome") +
     ylab(expression("-log"["10"]~"(p)")) + 
     # Custom the theme:
@@ -105,10 +107,10 @@ plot_pathway <- function(results, thres_fdr = 0.05, title, ylim = 1e-5) {
   cbf_1 <- c( "#E69F00", "#56B4E9", "#009E73", 
               "#F0E442", "#0072B2", "#D55E00", "#CC79A7", "#999999")
   ggplot(results, aes(x = Description, y = logp)) + 
-    geom_col(fill = "#0072B2", orientation = "x") +
+    geom_col(fill = "#6496CD", orientation = "x", width = 0.4) +
 
     coord_flip() +
-    scale_y_continuous(expand = c(0, 0), limits = c(0,-log10(ylim)), labels=scaleFUN) +
+    scale_y_continuous(expand = c(0, 0), limits = c(0,-log10(ylim)), labels=scaleFUN, breaks = seq(0,-log10(ylim), by = 2)) +
 
     theme_classic() +
     ylab(expression("-log"["10"]~"(p)")) + 
@@ -121,7 +123,7 @@ plot_pathway <- function(results, thres_fdr = 0.05, title, ylim = 1e-5) {
       strip.placement = "outside",
       axis.title.x = element_text(margin = margin(t = 0.5, b = 0.5, unit = "cm")),
       axis.title.y = element_blank(),
-      axis.text = element_text(size = 10),
+      axis.text = element_text(size = 10, color = "black"),
       legend.position = "right",
       panel.grid.major.y = element_blank(),
       legend.title = element_blank()
@@ -233,4 +235,81 @@ plot_dot_mrs <- function(data, CpGs = NA, td = NA){
     ggpubr::theme_cleveland()
   
   return(p)
+}
+# =================================================================================================== 
+# KM plot
+# =================================================================================================== 
+KM_plot <- function(test_var, time_var, event_var, pheno_mat, cut = "median", conf.int = F, palette = "jco", covariates = T,  ...){
+  
+  if(is.numeric(test_var)){
+    
+    if(cut == "median"){
+      m <- median(test_var)
+    }
+    
+    if(cut == "mean"){
+      m <- mean(test_var)
+    }
+    
+    if(cut == "maxstat"){
+      
+      df <- data.frame(cluster = test_var, time = pheno_mat[[time_var]], death = pheno_mat[[event_var]])
+
+      fo <- as.formula(paste0("Surv(time, death) ~ cluster"))
+      m <- maxstat::maxstat.test(fo, data = df, smethod = "LogRank")$estimate
+     
+    }
+      
+    gene_cut <- ifelse(test_var < m, "MRS Low", "MRS high")
+    
+  } else {
+    
+    gene_cut = test_var
+    
+  }
+  
+  df <- data.frame(Group = factor(gene_cut), time = pheno_mat[[time_var]], death = pheno_mat[[event_var]])
+  if(covariates) {
+    df <- cbind(df, pheno_mat)
+    cox_mod <- coxph(Surv(time, death) ~ Group + age_at_visit + APOE4 + MMSE_bl +  PTEDUCAT + PTGENDER + DX, 
+                     data = df, x= T)
+
+    surv_fit <- survfit(cox_mod, newdata = df, type = "aalen")
+    adjsurv <- adjustedCurves::adjustedsurv(data=df,
+                            variable="Group",
+                            ev_time="time",
+                            event="death",
+                            method="direct",
+                            outcome_model=cox_mod,
+                            conf_int=conf.int,
+                            bootstrap = F)
+
+    plot(
+      adjsurv,
+      conf_int = conf.int,
+      #palette = palette,
+      risk_table = T,
+      risk_table_stratify=TRUE,
+      risk_table_digits=0,
+      risk_table_warn = F,
+      ...
+    ) 
+
+    
+  } else {
+    fo <- as.formula(paste0("Surv(time, death) ~ Group"))
+    fit <- surv_fit(fo, data = df)
+    survminer::ggsurvplot(
+      fit,
+      data = df,
+      size = 1,
+      conf.int = conf.int,
+      pval = T,
+      risk.table = TRUE,
+      palette = palette,
+      ...
+    )
+  }
+  
+  
 }

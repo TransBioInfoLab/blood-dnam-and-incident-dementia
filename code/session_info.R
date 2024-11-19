@@ -54,6 +54,7 @@ list.of.packages <- c(
   "sesameData",
   "stats",                                        
   "SummarizedExperiment",    
+  "survminer",
   "survival",
   "S4Vectors",
   "tidyverse",   

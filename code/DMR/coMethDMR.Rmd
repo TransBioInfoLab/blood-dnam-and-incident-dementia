@@ -1,0 +1,321 @@
+---
+title: "Blood DNA Methylation Signature for Incident Dementia: Evidence from Longitudinal Cohorts"
+subtitle: "coMethDNR"
+author: 
+  - Wei Zhang^[University of Miami]
+  - Lily Wang^[University of Miami]
+date: "`r Sys.Date()`"
+output:
+  rmarkdown::html_document:
+    highlight: pygments
+    theme: yeti
+    toc: true
+    number_sections: true
+    df_print: paged
+    code_download: false
+    toc_float:
+      collapsed: yes
+    toc_depth: 3
+editor_options:
+  chunk_output_type: inline    
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+dir.base <- "../.."
+# Create and retrieve dir
+dir.data <- file.path(dir.base,"../DATASETS/")
+dir.data.dmr <- file.path(dir.base, "datasets/DMR/")
+dir.data.aux <- file.path(dir.data, "Aux_Sync")
+
+# Create results dir
+dir.results <- file.path(dir.base, "analysis_results/DMR")
+dir.results.meta <- file.path(dir.base, "analysis_results/meta_analysis")
+dir.results.combp <- file.path(dir.base, "analysis_results/combp")
+for(p in grep("dir.",ls(),value = T)) dir.create(get(p),recursive = TRUE,showWarnings = FALSE)
+```
+
+```{r}
+library(coMethDMR)
+library(BiocParallel)
+library(SummarizedExperiment)
+library(tidyverse)
+library(survival)
+library(janitor)
+source("../utility/meta.R")
+source("../utility/annotation_and_bacon.R")
+```
+
+# Auxilary function
+
+```{r}
+## Get residuals function
+getResid <- function(mat, pheno, betaToM = T, nCore = 1){
+  if(betaToM){
+    M.val <- log2(mat) - log2(1-mat)
+  } else M.val <- mat
+  
+  if(ncol(mat) != nrow(pheno)){
+    message("Sample size of methylation matrix and pheno data is not the same.")
+    pheno <- pheno[match(colnames(mat), rownames(pheno)),]
+  } 
+  
+  M.val <- as.matrix(M.val)
+  
+  if(nCore != 1){
+    doParallel::registerDoParallel(nCore)
+    para <- T
+  } else para <- F
+  
+  resid.mat <- plyr::aaply(
+    .data = M.val,
+    .margins = 1,
+    .fun = function(one){
+      dat <- data.frame (M = one, pheno)
+      tryCatch({
+        suppressMessages({
+          res <- lm(M ~ .,data = dat, na.action = na.exclude) %>% resid()
+          return(res)
+        })
+      }, error = function(e) {message(e);return(NULL)})
+    }, .parallel = para
+  )
+  
+  return(resid.mat)
+}
+## Get significant region with median methylation value
+getSigRegion <- function(coMeth.list, beta, pheno, time_var, event_var, adjust_var = NULL, nCore = 1){
+  
+  if(nCore != 1){
+    doParallel::registerDoParallel(nCore)
+    para <- T
+  } else para <- F
+  # make survival formula
+  fo <-  paste0("Surv(", time_var, ",", event_var, ") ~ median.beta")
+  if(!is.null(adjust_var)){
+    fo <- paste0(fo, " + ", paste0(adjust_var, collapse = "+"))
+  }
+  formula <- as.formula(fo)
+  
+  coMeth.df <- plyr::ldply(
+    .data = coMeth.list,
+    .fun = function(CpGs){
+      CpGinRegion <- beta[rownames(beta) %in% CpGs,]
+      median.region <- colMedians(CpGinRegion)
+      dat <- data.frame (median.beta = median.region, pheno)
+      tryCatch({
+        suppressMessages({
+          cox_mod <- coxph(
+            formula,
+            data = dat
+          )
+          # get summary and coefficient
+          cox_coef <- summary(cox_mod)$coefficients %>% data.frame()
+          
+          coef_df <- cox_coef[grepl("median.beta", rownames(cox_coef)),] %>% 
+            clean_names()
+  
+          coef_df$CpGsinRegion <- paste0(CpGs, collapse = ",")
+          coef_df$n <- length(CpGs)
+          return(coef_df)
+        })
+      }, error = function(e) {message(e);return(NULL)})
+    }, .parallel = F, .id = "region"
+  )
+  
+  coMeth.df <- coMeth.df %>% mutate(fdr = p.adjust(pr_z, method = "fdr"))
+  
+  return(coMeth.df)
+}
+```
+
+## Load results
+
+```{r}
+sig.dmr <- read_csv(
+  file.path(dir.results.combp, "combp_FHS9_ADNI_results_annotated.csv")
+) %>% 
+  filter(z_sidak_p < 0.05 & z_p < 1E-05 & pct_direction %in% c(0,1) & n_probes >= 3) 
+sig.dmr.cpg <- str_split(sig.dmr$cpgs_in_region, ",") %>% unlist() ## 134
+```
+
+# ADNI
+
+## Load Data
+
+```{r}
+adni_se_corrected <- readRDS(
+  file.path(file.path(dir.base, "datasets/ADNI/BEclear") , "ADNI_BEclear_se.rds")
+)
+pheno_adni <- data.frame(
+  colData(adni_se_corrected)
+)
+beta <- assay(adni_se_corrected)[sig.dmr.cpg,]
+```
+
+```{r}
+# Pre-defined region
+probes.cluster.all <- str_split(sig.dmr$cpgs_in_region, ",")
+#names(probes.cluster.all) <- sig.dmr$region
+```
+
+## Find comethylated clusters
+
+```{r}
+celltype <- c("B", "NK", "CD4T", "Mono", "Gran")
+resid_mat <- getResid(
+  mat = beta,
+  betaToM = T,
+  pheno = pheno_adni %>% dplyr::select(c("age_at_visit", "PTGENDER", celltype)),
+  nCore = 10
+)
+### Find co-methylated clusters
+coMeth_ls <- CoMethAllRegions(
+  dnam = resid_mat,      
+  betaToM = F,                   
+  CpGs_ls = probes.cluster.all,
+  arrayType = "EPIC",
+  method = "spearman",             
+  returnAllCpGs = TRUE,              
+  output = "CpGs",
+  nCores_int = 6,
+  progressbar = TRUE
+)
+save(
+  resid_mat,
+  coMeth_ls,
+  file = file.path(dir.data.dmr,"ADNI_resid_mat_and_coMeth_ls_combp_dmr.rda")
+)
+```
+
+## Test with survival
+
+```{r}
+load(file.path(dir.data.dmr,"ADNI_resid_mat_and_coMeth_ls_combp_dmr.rda"))
+```
+
+```{r}
+coMeth.results <- getSigRegion(
+  coMeth.list = coMeth_ls,
+  beta = beta,
+  pheno = pheno_adni,
+  time_var = "SurvDays",
+  event_var = "DEM_STATUS",
+  nCore = 1
+)
+coMeth.results <- coMeth.results %>% 
+  dplyr::mutate(input_region = sig.dmr$region,
+                out_region = region, .keep = "unused")
+coMeth.results %>% readr::write_csv(
+  file.path(dir.results, "ADNI_combp_dmr_coMeth_median_results.csv")
+)
+```
+
+# FHS
+
+## Load Data
+
+```{r}
+framingham_se <- readRDS(
+  file.path(dir.data, "Framingham/DNAm/processed/EPIC/FHS_OffSpring_EPIC_rm_dem_nw_se.RDS")
+)
+pheno_fhs <- data.frame(
+  colData(framingham_se)
+)
+beta <- assay(framingham_se)[sig.dmr.cpg,]
+```
+
+## Find comethylated clusters
+
+```{r}
+celltype <- c("B", "NK", "CD4T", "Mono", "Gran")
+resid_mat <- getResid(
+  mat = beta,
+  betaToM = T,
+  pheno = pheno_fhs %>% dplyr::select(c("Age_at_collection", "sex", celltype)),
+  nCore = 10
+)
+### Find co-methylated clusters
+coMeth_ls <- CoMethAllRegions(
+  dnam = resid_mat,      
+  betaToM = F,                   
+  CpGs_ls = probes.cluster.all,
+  arrayType = "EPIC",
+  method = "spearman",             
+  returnAllCpGs = TRUE,              
+  output = "CpGs",
+  nCores_int = 6,
+  progressbar = TRUE
+)
+save(
+  resid_mat,
+  coMeth_ls,
+  file = file.path(dir.data.dmr,"FHS_resid_mat_and_coMeth_ls_combp_dmr.rda")
+)
+```
+
+## Test with survival
+
+```{r}
+load(file.path(dir.data.dmr,"FHS_resid_mat_and_coMeth_ls_combp_dmr.rda"))
+```
+
+```{r}
+coMeth.results <- getSigRegion(
+  coMeth.list = coMeth_ls,
+  beta = beta,
+  pheno = pheno_fhs,
+  time_var = "dem_followup_time",
+  event_var = "DEM_STATUS",
+  nCore = 1
+)
+coMeth.results <- coMeth.results %>% 
+  dplyr::mutate(input_region = sig.dmr$region,
+                out_region = region, .keep = "unused")
+coMeth.results %>% readr::write_csv(
+  file.path(dir.results, "FHS_combp_dmr_coMeth_median_results.csv")
+)
+```
+
+# Meta analysis
+
+```{r}
+adni_results <- read_csv(file.path(dir.results, "ADNI_combp_dmr_coMeth_median_results.csv"))
+results_adni <- adni_results %>% 
+  mutate(study = "ADNI",
+         study_id = "ADNI")
+fhs_results <- read_csv(file.path(dir.results, "FHS_combp_dmr_coMeth_median_results.csv"))
+results_fhs9 <- fhs_results %>% 
+  mutate(study = "FHS",
+         study_id = "FHS9")
+```
+
+```{r echo = F, eval = F}
+# Create list for meta analysis
+results_list <- list(
+  FHS9 = results_fhs9,
+  ADNI = results_adni
+)
+# Function meta_wrapper load from meta.R
+results <- meta_wrapper(
+  results_list = results_list,
+  effect = "coef",
+  se = "se_coef",
+  sm = "HR",
+  test_var = "input_region",
+  select_var = NULL
+)
+
+results <- left_join(
+  sig.dmr %>% dplyr::select(input_region = region, n_probes, z_p, z_sidak_p, combp_direction = direction, cpgs_in_region),
+  results
+)
+# Save results
+write_csv(
+  results %>% arrange(z_sidak_p),
+  file.path(dir.results,
+            "meta_analysis_FHS9_ADNI_DMR_results.csv")
+)
+```
+

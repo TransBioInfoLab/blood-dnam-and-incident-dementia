@@ -22,7 +22,7 @@ editor_options:
 
 ```{r setup, include=FALSE}
 # Initial settings
-knitr::opts_chunk$set(echo = TRUE, eval = T)
+knitr::opts_chunk$set(echo = TRUE, eval = T, warning = F, message = F)
 
 # Create dir
 cohort <- "Framingham"
@@ -77,9 +77,112 @@ pheno_df %>%
   summarise(n = n(), 
             freq = n/nrow(pheno_df) * 100,
             .by = smoking_status)
+pheno_df <- pheno_df %>% 
+  mutate(smoking_hist = ifelse(is.na(smoking_status), NA, ifelse(
+         smoking_status %in% c(1,2), 1, 0)))
 ```
 
-# Analysis
+```{r}
+plyr::ldply(
+  c("dem_followup_time", "Age_at_collection",  "sex", "EDUC_YEAR", "smoking_hist"),
+  .fun = function(var) {
+    if(!var %in% c("sex", "smoking_hist")) {
+      fo <- as.formula(paste0(var, "~ DEM_STATUS"))
+      df <- pheno_df %>% rstatix::wilcox_test(fo) %>% 
+        dplyr::select(var = .y., p)
+    } else {
+      df <- pheno_df %>% rstatix::freq_table(var, "DEM_STATUS")
+      mat <- as.table(matrix(df$n, nrow = 2, ncol = 2))
+      dimnames(mat) <- list(DEM_STATUS = df$DEM_STATUS[1:2],
+                            GROUP = df[[var]][c(1,3)])
+      df <- rstatix::fisher_test(mat) %>%
+        dplyr::mutate(var = var) %>%
+        dplyr::select(var, p)
+    }
+    df
+  }
+)
+```
+
+## Correlation between PC and covariates
+
+```{r}
+# compute sds for each row
+sds <- matrixStats::rowSds(betaMat)
+sdsSorted <- order(sds, decreasing = TRUE)
+
+# order by most variable probes on top
+beta <- betaMat[sdsSorted ,]
+pc <- irlba::irlba(t(beta[1:50000,]))
+pl <- plyr::llply(
+   c("dem_followup_time", "Age_at_collection",  "sex", "EDUC_YEAR", "smoking_hist"),
+  .fun = function(var) {
+    if(!var %in% c("sex", "smoking_hist")) {
+      if(var == "dem_followup_time") {
+        xlab <- "Follow up period in years"
+        pheno_df$dem_followup_time <- pheno_df$dem_followup_time/365
+      } 
+      if(var == "Age_at_collection") {
+        xlab <- "Age"
+      }
+      if(var == "EDUC_YEAR") {
+        xlab <- "Education"
+      }
+      if(var != "EDUC_YEAR") {
+        
+        ggpubr::ggscatter(
+          data = data.frame(pheno_df, PC = pc$u[,1]),
+          x = var,
+          y = "PC",
+          cor.coef = T,
+          add = "reg.line",
+          ylab = "First PC of FHS beta values",
+          xlab = xlab,
+          add.params = list(color = "navy"),
+          cor.method = "spearman",
+          cor.coeff.args = list(label.y.npc = "top")
+        )
+      } else {
+        df <- data.frame(pheno_df, PC = pc$u[,1])
+        df <- df[!is.na(df[[var]]),]
+        ggpubr::ggboxplot(
+          data = df,
+          x = var,
+          y = "PC",
+          fill = "grey",
+          palette = "npg",
+          ylab = "First PC of FHS beta values",
+          xlab = xlab
+        ) + ggpubr::stat_compare_means(method = "kruskal.test", label.y.npc = "bottom", label.x.npc = 0.3) + 
+        guides(fill = "none")
+      }
+    } else {
+      if (var == "smoking_hist") xlab <- "Smoking History"
+      if (var == "sex") xlab <- "Gender"
+      df <- data.frame(pheno_df, PC = pc$u[,1])
+      df <- df[!is.na(df[[var]]),]
+      ggpubr::ggboxplot(
+        data = df,
+        x = var,
+        y = "PC",
+        fill = var,
+        palette = "npg",
+        ylab = "First PC of FHS beta values",
+        xlab = xlab
+      ) + ggpubr::stat_compare_means(method = "wilcox.test", label.y.npc = "bottom") + 
+        guides(fill = "none")
+    }
+  }
+)
+ggpubr::ggarrange(plotlist = pl, nrow = 3, ncol = 2)
+ggsave(
+  filename = file.path(dir.results, "FHS_beta_pc_vs_covariates.pdf"),
+  height = 12,
+  width = 10
+)
+```
+
+# Main analysis
 
 ## Fit model 
 
@@ -130,14 +233,14 @@ bacon_results <- bacon_adj(
 )
 ```
 
-```{r}
+```{r eval = F}
 writexl::write_xlsx(
   bacon_results$inflation.stat,
   file.path(dir.results, "Framingham_EPIC_beta_single_cpg_cox_all_celltypes_inflation_stats.xlsx")
 )
 ```
 
-```{r}
+```{r eval = F}
 write_csv(
   bacon_results$data.with.inflation,
   file.path(dir.results, "Framingham_EPIC_beta_single_cpg_cox_all_celltypes_bacon_results.csv")
@@ -178,6 +281,187 @@ write_csv(
   results_mm,
   file.path(dir.results, "ICC_pedno_cpg_1e05.csv")
 )
+```
+
+# Sensitivity analysis 1: smoking
+
+```{r eval = F}
+results <- cox_coef(
+  beta = betaMat,
+  pheno = pheno_df,
+  time_var = "dem_followup_time",
+  event_var = "DEM_STATUS",
+  adjust_var = c("Age_at_collection", "sex", celltype, "smoking_hist"),
+  scale = T,
+  fdr_method = "fdr",
+  save = T,
+  dir.save = dir.results,
+  prefix = "Framingham_EPIC_beta_single_cpg_cox_all_celltypes_smokhist",
+  cores = 20
+)
+```
+
+## Add annotation
+
+```{r eval = F}
+library(IlluminaHumanMethylationEPICanno.ilm10b4.hg19)
+# Load from annotation_and_bacon.R
+results_anno <- annotate_results(results,
+                                 array = "EPIC",
+                                 dir.data.aux = dir.data.aux,
+                                 dir.save = dir.results,
+                                 prefix = "Framingham_EPIC_beta_single_cpg_cox_all_celltypes_smokhist")
+```
+
+```{r}
+results_anno <- read_csv(
+  file.path(dir.results, "Framingham_EPIC_beta_single_cpg_cox_all_celltypes_smokhist_annotated_results.csv")
+)
+```
+
+```{r}
+bacon_results <- bacon_adj(
+  results_anno,
+  est_var = "coef",
+  z_var = "z",
+  std_var = "se_coef",
+  save = T,
+  dir.save = file.path(dir.results),
+  prefix = "Framingham_EPIC_beta_single_cpg_cox_all_celltypes_smokhist"
+)
+```
+
+# Sensitivity analysis 2: exclude high-risk individual
+
+```{r}
+followup_qt <- quantile(pheno_df$dem_followup_time)
+tau_qt <- quantile(as.numeric(pheno_df$TAU), na.rm = T)
+pheno_df <- pheno_df %>% 
+  filter((DEM_STATUS == 0 & dem_followup_time > followup_qt[2]) | (DEM_STATUS == 0 & TAU < tau_qt[4]) | DEM_STATUS == 1)
+beta <- betaMat[,pheno_df$sample]
+```
+
+```{r eval = F}
+# This function is load from cpg_test.R
+results <- cox_coef(
+  beta = beta,
+  pheno = pheno_df,
+  time_var = "dem_followup_time",
+  event_var = "DEM_STATUS",
+  adjust_var = c("Age_at_collection", "sex", celltype),
+  scale = T,
+  fdr_method = "fdr",
+  save = T,
+  dir.save = file.path(dir.results),
+  prefix = "Framingham_EPIC_beta_single_cpg_cox_all_celltypes_rm_highrisk",
+  cores = 20
+)
+```
+
+## Add annotation
+
+```{r eval = F}
+library(IlluminaHumanMethylationEPICanno.ilm10b4.hg19)
+# This function is load from annotation_and_bacon.R
+results_anno <- annotate_results(results,
+                                 array = "EPIC",
+                                 dir.data.aux = dir.data.aux,
+                                 dir.save = dir.results,
+                                 prefix = "Framingham_EPIC_beta_single_cpg_cox_all_celltypes_rm_highrisk")
+```
+
+## Bacon correction
+
+```{r message = F, echo = F}
+results_anno <- read_csv(file.path(
+  dir.results, "Framingham_EPIC_beta_single_cpg_cox_all_celltypes_rm_highrisk_annotated_results.csv"
+))
+```
+
+```{r}
+# This function is load from annotation_and_bacon.R
+results_bacon <- bacon_adj(
+  data = results_anno,
+  est_var = "coef",
+  z_var = "z",
+  std_var = "se_coef",
+  save = T,
+  dir.save = file.path(dir.results),
+  prefix = "Framingham_EPIC_beta_single_cpg_cox_all_celltypes_rm_highrisk")
+```
+
+# Sensitivity analysis 3: AD in Dementia
+
+```{r eval = F}
+# This function is load from cpg_test.R
+results <- cox_coef(
+  beta = betaMat,
+  pheno = pheno_df,
+  time_var = "dem_followup_time",
+  event_var = "AD_STATUS",
+  adjust_var = c("Age_at_collection", "sex", celltype),
+  scale = T,
+  fdr_method = "fdr",
+  save = T,
+  dir.save = file.path(dir.results),
+  prefix = "Framingham_EPIC_beta_single_cpg_cox_all_celltypes_AD",
+  cores = 30
+)
+```
+
+## Add annotation
+
+```{r eval = F}
+library(IlluminaHumanMethylationEPICanno.ilm10b4.hg19)
+# This function is load from annotation_and_bacon.R
+results_anno <- annotate_results(results,
+                                 array = "EPIC",
+                                 dir.data.aux = dir.data.aux,
+                                 dir.save = dir.results,
+                                 prefix = "Framingham_EPIC_beta_single_cpg_cox_all_celltypes_AD")
+```
+
+## Bacon correction
+
+```{r message = F, echo = F}
+results_anno <- read_csv(file.path(
+  dir.results, "Framingham_EPIC_beta_single_cpg_cox_all_celltypes_AD_annotated_results.csv"
+))
+```
+
+```{r}
+# This function is load from annotation_and_bacon.R
+results_bacon <- bacon_adj(
+  data = results_anno,
+  est_var = "coef",
+  z_var = "z",
+  std_var = "se_coef",
+  save = T,
+  dir.save = file.path(dir.results),
+  prefix = "Framingham_EPIC_beta_single_cpg_cox_all_celltypes_AD")
+```
+
+# Compare
+
+```{r}
+results1 <- read_csv(
+  file.path(dir.results, "Framingham_EPIC_beta_single_cpg_cox_all_celltypes_bacon_results.csv")
+)
+results2 <- read_csv(
+  file.path(dir.results, "Framingham_EPIC_beta_single_cpg_cox_all_celltypes_smokhist_bacon_correction.csv")
+)
+results3 <- read_csv(
+  file.path(dir.results, "Framingham_EPIC_beta_single_cpg_cox_all_celltypes_rm_highrisk_bacon_correction.csv")
+)
+```
+
+```{r}
+ls <- list(
+  Original = results1 %>% filter(pValue.bacon < 1e-05) %>% pull(cpg),
+  Sensitivity = results2 %>% filter(pValue.bacon < 1e-05) %>% pull(cpg),
+  "Remove high-risk individuals" = results3 %>% filter(pValue.bacon < 1e-05) %>% pull(cpg)
+)
+ggvenn::ggvenn(ls)
 ```
 
 # Session Information

@@ -1,0 +1,408 @@
+---
+title: "Blood DNA Methylation Signature for Incident Dementia: Evidence from Longitudinal Cohorts"
+subtitle: "MRS model"
+author: 
+  - Wei Zhang^[University of Miami]
+  - Lily Wang^[University of Miami]
+date: "`r Sys.Date()`"
+output:
+  rmarkdown::html_document:
+    highlight: pygments
+    theme: yeti
+    toc: true
+    number_sections: true
+    df_print: paged
+    code_download: true
+    toc_float:
+      collapsed: yes
+    toc_depth: 3
+editor_options:
+  chunk_output_type: inline    
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+dir.base <- "../.."
+type <- "FHS9_ADNI"
+# Create and retrieve dir
+dir.data <- file.path(dir.base,"../DATASETS/")
+dir.supp <- file.path(dir.base, "datasets/meta_analysis_results/", type)
+dir.data.mrs <- file.path(dir.base, "datasets/MRS/")
+
+# Create results dir
+dir.results <- file.path(dir.base, "analysis_results/MRS_analysis", type)
+dir.results.plot <- file.path(dir.results, "plots/")
+dir.results.meta <- file.path(dir.base, "analysis_results/meta_analysis")
+dir.data.aux <- file.path(dir.base,"../DATASETS/Aux_Sync/")
+for(p in grep("dir.",ls(),value = T)) dir.create(get(p),recursive = TRUE,showWarnings = FALSE)
+```
+
+# Load required packages
+
+```{r libs, include=T,message=F,warning=F, eval = T}
+library(readr)
+library(dplyr)
+library(SummarizedExperiment)
+library(tidyverse)
+library(caret)
+library(pROC)
+library(DT)
+library(ggplot2)
+library(ggpubr)
+```
+
+## Anxillary functions
+
+```{r message = F, warning = F}
+# Load functions
+source("../utility/MRS_aux_fn.R")
+source("../utility/plot.R")
+library(SummarizedExperiment)
+```
+
+## Load results
+
+### Load meta analysis results
+
+```{r message = F}
+results_meta <- read_csv(
+  file.path(dir.results.meta,
+            "meta_analysis_FHS9_ADNI_results.csv")
+)
+```
+
+```{r}
+sig_weights_fhs <- results_meta %>%
+  filter(FHS9_pValue.bacon < 1e-05) %>%
+  pull(FHS9_Estimate.bacon, name = "cpg")
+```
+
+```{r}
+cpg_weights <- list(
+  fhs = sig_weights_fhs
+)
+```
+
+# Train on FHS and test on ADNI
+
+```{r}
+framingham_se <- readRDS(
+  file.path(dir.data, "Framingham/DNAm/processed/EPIC/FHS_OffSpring_EPIC_rm_dem_nw_se.RDS")
+)
+pheno_fhs <- data.frame(
+  colData(framingham_se)
+)
+beta <- assay(framingham_se)
+M <- minfi::logit2(beta)
+```
+
+```{r}
+adni.se <- readRDS(
+  file.path(dir.data, "ADNI/DNAm/pca_filtering/all_sample/ADNI_all_sample_cn_mci_baseline_surv.rds")
+)
+betaMat <- assay(adni.se)
+pheno_df <- colData(adni.se) %>% 
+  as.data.frame() 
+```
+
+## Check distribution
+
+```{r}
+# smoking
+medhist <- read_csv(
+  file.path(dir.base, "../DATASETS", "ADNI", "Phenotype/raw/MEDHIST.csv")
+)
+medhist <- medhist %>%
+  dplyr::select(RID, MH16SMOK) %>% 
+  group_by(RID) %>%
+  slice_max(MH16SMOK, with_ties = F) %>% # For each participant (RID), if any record indicates a history of smoking (MH16SMOK = 1), that row is retained.
+  ungroup()
+pheno_df <- left_join(pheno_df, medhist)
+pheno_cn <- pheno_df %>%
+  filter(SurvDays > 0)
+pheno_cn$status <- ifelse((pheno_cn$DX == "CN" & pheno_cn$DX2 %in% c("Dementia", "MCI"))|
+                          (pheno_cn$DX == "MCI" & pheno_cn$DX2 %in% c("Dementia")), 1, 0)
+pheno_cn$APOE <- ifelse(pheno_cn$APOE4 != 0, 1, 0)
+```
+
+```{r}
+pheno_cn1 <- pheno_cn %>% filter(DX == "CN")
+df <- plyr::ldply(
+  c(0,1),
+  .fun = function(x) {
+    pheno_df <- pheno_cn1 %>% filter(status == x)
+    plyr::ldply(
+      c("age_at_visit",  "PTGENDER", "PTEDUCAT", "MH16SMOK", "APOE"),
+      .fun = function(var) {
+        if(!var %in% c("PTGENDER", "MH16SMOK", "APOE")) {
+          fo <- as.formula(paste0(var, "~ status"))
+          df <- pheno_cn1 %>% rstatix::wilcox_test(fo) %>% 
+            dplyr::select(var = .y., p)
+          df <- data.frame(status = x, df, stats = paste0(round(mean(pheno_df[[var]]),2), " (",
+            round(sd(pheno_df[[var]]),2), ")"), n = nrow(pheno_df))
+        } else {
+          freq <- pheno_df %>% 
+            summarise(n = n(), 
+                      freq = n/nrow(pheno_df) * 100,
+                      .by = var)
+          df <- pheno_cn1 %>% rstatix::freq_table(var, "status")
+          mat <- as.table(matrix(df$n, nrow = 2, ncol = 2))
+          dimnames(mat) <- list(status = df$status[1:2],
+                                GROUP = df[[var]][c(1,3)])
+          df <- rstatix::fisher_test(mat) %>%
+            dplyr::mutate(var = var) %>%
+            dplyr::select(var, p)
+          df <- data.frame(status = x,
+            df, stats = paste0(freq$n, " (", round(freq$freq,2), ")")[1],
+              stats2 = paste0(freq$n, " (", round(freq$freq,2), ")")[2], 
+          n = nrow(pheno_df))
+  
+        }
+        df
+    })
+  }
+)
+
+pheno_cn2 <- pheno_cn %>% filter(DX == "MCI")
+df2 <- plyr::ldply(
+  c(0,1),
+  .fun = function(x) {
+    pheno_df <- pheno_cn2 %>% filter(status == x)
+    plyr::ldply(
+      c("age_at_visit",  "PTGENDER", "PTEDUCAT", "MH16SMOK", "APOE"),
+      .fun = function(var) {
+        if(!var %in% c("PTGENDER", "MH16SMOK", "APOE")) {
+          fo <- as.formula(paste0(var, "~ status"))
+          df <- pheno_cn2 %>% rstatix::wilcox_test(fo) %>% 
+            dplyr::select(var = .y., p)
+          df <- data.frame(status = x, df, stats = paste0(round(mean(pheno_df[[var]]),2), " (",
+            round(sd(pheno_df[[var]]),2), ")"), n = nrow(pheno_df))
+        } else {
+          freq <- pheno_df %>% 
+            summarise(n = n(), 
+                      freq = n/nrow(pheno_df) * 100,
+                      .by = var)
+          df <- pheno_cn2 %>% rstatix::freq_table(var, "status")
+          mat <- as.table(matrix(df$n, nrow = 2, ncol = 2))
+          dimnames(mat) <- list(status = df$status[1:2],
+                                GROUP = df[[var]][c(1,3)])
+          df <- rstatix::fisher_test(mat) %>%
+            dplyr::mutate(var = var) %>%
+            dplyr::select(var, p)
+          df <- data.frame(status = x,
+            df, stats = paste0(freq$n, " (", round(freq$freq,2), ")")[1],
+              stats2 = paste0(freq$n, " (", round(freq$freq,2), ")")[2], n = nrow(pheno_df))
+  
+        }
+        df
+    })
+  }
+)
+```
+
+```{r}
+write_csv(
+  df,
+  file.path(dir.data.mrs, "ADNI_distribution_CN.csv")
+)
+write_csv(
+  df2,
+  file.path(dir.data.mrs, "ADNI_distribution_MCI.csv")
+)
+```
+
+## Include P < 0.05
+
+```{r eval = F}
+model <- fit_glmnet(
+      cpgs = names(cpg_weights$fhs),
+      beta = M,
+      y = Surv(pheno_fhs$dem_followup_time, pheno_fhs$DEM_STATUS), 
+      k = 5, 
+      a = 0,
+      type.measure = "C",
+      family = "cox",
+      standardize = F,
+      type = "survival"
+    )
+```
+
+```{r eval = F}
+save(model,
+     file = file.path(dir.results, "Ridge_FHS_pval_05_model.rda"))
+```
+
+## Test on ADNI CN + MCI converted to Dementia
+
+```{r}
+load(file.path(dir.results, "Ridge_FHS_pval_05_model.rda"))
+```
+
+```{r}
+pheno_df <- colData(adni.se) %>%
+  data.frame()
+
+pheno_df$status <- ifelse((pheno_df$DX == "CN" & pheno_df$DX2 %in% c("Dementia", "MCI"))|
+                          (pheno_df$DX == "MCI" & pheno_df$DX2 %in% c("Dementia")), 1, 0)
+adni_beta <- assay(adni.se)
+pheno_cn <- pheno_df %>%
+  filter(SurvDays > 0)
+adni_beta_cn <- adni_beta[,pheno_cn$barcodes]
+adni_M_cn <- minfi::logit2(adni_beta_cn)
+```
+
+```{r}
+mrs <- get_MRS(model$coeff, adni_M_cn) 
+```
+
+```{r}
+pheno_cn$MRS <- scale(mrs$MRS)
+mod1 <- coxph(
+  Surv(SurvDays, status) ~ MRS + age_at_visit + PTGENDER + DX + APOE4 + MMSE_bl + PTEDUCAT,
+  data = pheno_cn
+)
+s <- summary(mod1)
+s
+```
+
+```{r}
+coef_df <- s$coefficients %>%
+  data.frame() %>%
+  dplyr::select(coef, exp.coef., Pr...z..) %>% 
+  rownames_to_column("Characteristic") %>% 
+  mutate(Coefficient = round(coef, 3),
+         "HR (95% CI)" = paste0(round(exp.coef.,3), " (", round(s$conf.int[,3],3), ",", round(s$conf.int[,4],3), ")"),
+         "P Value" = Pr...z..,
+         .keep = "unused")
+
+writexl::write_xlsx(
+  coef_df,
+  file.path(dir.results, "summary_ADNI.xlsx")
+)
+```
+
+### KM plot
+
+```{r}
+pheno_cn$SurvYears <- pheno_cn$SurvDays/365
+qt <- quantile(pheno_cn$MRS, probs = seq(0,1,0.25))
+pheno_cn$group <- ifelse(pheno_cn$MRS < qt[2], "Low", ifelse (
+  pheno_cn$MRS > qt[4], "High", "Median"
+))
+pheno_sub <- pheno_cn %>% filter(group %in% c("Low", "High"))
+pdf(file = file.path(dir.results.plot, "KM_plot_ridge_ADNI.pdf"),
+    width = 10,
+    height = 8)
+print(KM_plot(test_var = pheno_sub$group, time_var = "SurvYears", 
+        event_var = "status", pheno_mat = pheno_sub, conf.int = F,
+        covariates = F,
+        xlab = "Time (years)", risk.table.pos = "out", ylab = "Survival rate (%)",
+        title = "Kaplan-Meier Survival Curve for Low and High MRS Groups", 
+        #xlim = c(0,11.5), 
+        break.x = 2, tables.theme = theme_cleantable(), 
+        surv.scale = "percent",legend.title = " ",
+        #legend.labs = c("Low MRS Group", "High MRS Group"),
+        font.legend = 14,
+        palette = "lancet", break.y = 0.2, tables.height = 0.15,tables.y.text = FALSE),
+      newpage = F)
+dev.off()
+```
+
+## Test on ADNI CN + MCI converted to AD
+
+```{r}
+pheno_df <- colData(adni.se) %>%
+  data.frame()
+
+dxsum <- read_csv(
+  file.path(dir.data.aux, "../ADNI/Phenotype/raw/DXSUM_PDXCONV_ADNIALL_downloaded_12-11-2022.csv")
+)
+dxsum <- dxsum %>% 
+  dplyr::select(RID, EXAMDATE, DXMDUE, DXDDUE) %>% 
+  group_by(RID) %>% 
+  slice_max(as.Date(EXAMDATE))
+dxsum$EXAMDATE <- NULL
+dxsum <- dxsum  %>% unique()
+pheno_df <- left_join(
+  pheno_df, dxsum
+)
+table(pheno_df$DXDDUE)
+table(pheno_df$DXMDUE)
+table(pheno_df$DX2)
+table(pheno_df$DX)
+
+pheno_df$status <- ifelse((pheno_df$DX == "CN" & pheno_df$DXDDUE == 1)|
+                          (pheno_df$DX == "CN" & pheno_df$DXMDUE == 1) |
+                          (pheno_df$DX == "MCI" & pheno_df$DXDDUE == 1), 1, 0)
+pheno_df$status[is.na(pheno_df$status)] <- 0
+table(pheno_df$status)
+
+adni_beta <- assay(adni.se)
+pheno_cn <- pheno_df %>%
+  filter(SurvDays > 0)
+adni_beta_cn <- adni_beta[,pheno_cn$barcodes]
+adni_M_cn <- minfi::logit2(adni_beta_cn)
+```
+
+```{r}
+mrs <- get_MRS(model$coeff, adni_M_cn) 
+```
+
+```{r}
+pheno_cn$MRS <- scale(mrs$MRS)
+mod1 <- coxph(
+  Surv(SurvDays, status) ~ MRS + age_at_visit + PTGENDER + DX + APOE4 + MMSE_bl + PTEDUCAT,
+  data = pheno_cn
+)
+summary(mod1)
+s <- summary(mod1)
+s
+```
+
+```{r}
+coef_df <- s$coefficients %>%
+  data.frame() %>%
+  dplyr::select(coef, exp.coef., Pr...z..) %>% 
+  rownames_to_column("Characteristic") %>% 
+  mutate(Coefficient = round(coef, 3),
+         "HR (95% CI)" = paste0(round(exp.coef.,3), " (", round(s$conf.int[,3],3), ",", round(s$conf.int[,4],3), ")"),
+         "P Value" = Pr...z..,
+         .keep = "unused")
+
+writexl::write_xlsx(
+  coef_df,
+  file.path(dir.results, "summary_ADNI_AD.xlsx")
+)
+```
+
+### KM plot
+
+```{r}
+pheno_cn$SurvYears <- pheno_cn$SurvDays/365
+qt <- quantile(pheno_cn$MRS, probs = seq(0,1,0.25))
+pheno_cn$group <- ifelse(pheno_cn$MRS < qt[2], "Low", ifelse (
+  pheno_cn$MRS > qt[4], "High", "Median"
+))
+pheno_sub <- pheno_cn %>% filter(group %in% c("Low", "High"))
+pdf(file = file.path(dir.results.plot, "adjusted_KM_plot_ridge_ADNI_maxstat_AD.pdf"),
+    width = 10,
+    height = 8)
+
+  KM_plot(test_var = pheno_sub$group, time_var = "SurvYears", 
+        event_var = "status", pheno_mat = pheno_sub, conf.int = F,
+        covariates = T,
+        xlab = "Time (years)",
+        title = "Adjusted Kaplan-Meier Survival Curve for Low and High MRS Groups", 
+        legend.title = " ",
+        censoring_ind="points", censoring_ind_shape=3,
+        censoring_ind_size=2,
+        custom_colors = ggsci::pal_lancet()(2), 
+        y_breaks = seq(0, 1, by = 0.2), x_breaks = seq(0,10,by = 2), 
+        gg_theme = theme_survminer(), legend.position = "top",
+        risk_table_theme = theme_cleantable() + theme(panel.background = element_blank()),
+        risk_table_ylab = NULL,
+        risk_table_height = 0.15) 
+ 
+dev.off()
+```

@@ -36,7 +36,9 @@ library(meta)
 source("../utility/meta.R")
 ```
 
-# Load results from individual analysis
+# Main analysis
+
+## Load results from individual analysis
 
 ```{r message = F}
 # FHS exam 9
@@ -55,7 +57,7 @@ results_adni <- results_adni %>%
          study_id = "ADNI")
 ```
 
-# Meta analysis
+## Meta analysis
 
 ```{r echo = F, eval = F}
 # Create list for meta analysis
@@ -80,13 +82,13 @@ write_csv(
 
 ## Add anotation
 
-```{r message = F, echo=F}
+```{r message = F, echo=F, eval = F}
 results <-  read_csv(
   file.path(dir.results.meta, "meta_analysis_FHS9_ADNI_results.csv")
 )
 ```
 
-```{r message = F}
+```{r message = F, eval = F}
 data <- readr::read_tsv(
   file.path(dir.data.aux,"nasser_2021/AllPredictions.AvgHiC.ABC0.015.minus150.ForABCPaperV3.txt.gz")
 )
@@ -117,7 +119,7 @@ cpgs.ad.is.enahncer.nasser <- data.frame(
 ) %>% unique %>% dplyr::group_by(Cpg) %>% summarise("Cell_type" = paste(Cell_type,collapse = ";"))
 ```
 
-```{r}
+```{r eval = F}
 load(file.path(dir.data.aux,"E073_15_coreMarks_segments.rda"))
 
 result.gr <- results %>% makeGRangesFromDataFrame(start.field = "start",end.field = "end",seqnames.field = "seqnames")
@@ -145,6 +147,435 @@ write_csv(
   file.path(dir.results.meta, "meta_analysis_FHS9_ADNI_sig_results_annotated.csv")
 )
 ```
+
+# Sensitivity analysis 1: smoking
+
+```{r message = F}
+# FHS exam 9
+results_fhs9 <- read_csv(
+  file.path(dir.results, "Framingham/EPIC_EXAM9/Framingham_EPIC_beta_single_cpg_cox_all_celltypes_smokhist_bacon_correction.csv")
+)
+results_fhs9 <- results_fhs9 %>% 
+  mutate(study = "FHS",
+         study_id = "FHS9")
+# ADNI
+results_adni <- read_csv(
+  file.path(dir.results, "ADNI/cox/ADNI_adjust_celltypes_first_2pc_smokhist_single_cpg_cox_bacon_correction.csv")
+)
+results_adni <- results_adni %>% 
+  mutate(study = "ADNI",
+         study_id = "ADNI")
+```
+
+## Meta analysis
+
+```{r echo = F, eval = F}
+# Create list for meta analysis
+results_list <- list(
+  FHS9 = results_fhs9,
+  ADNI = results_adni
+)
+# Function meta_wrapper load from meta.R
+results <- meta_wrapper(
+  results_list = results_list,
+  effect = "Estimate.bacon",
+  se = "StdErr.bacon",
+  sm = "HR"
+)
+# Save results
+write_csv(
+  results,
+  file.path(dir.results.meta,
+            "meta_analysis_FHS9_ADNI_sens_results.csv")
+)
+```
+
+## Add anotation
+
+```{r message = F, echo=F, eval = F}
+results <-  read_csv(
+  file.path(dir.results.meta, "meta_analysis_FHS9_ADNI_sens_results.csv")
+)
+```
+
+```{r message = F, eval = F}
+data <- readr::read_tsv(
+  file.path(dir.data.aux,"nasser_2021/AllPredictions.AvgHiC.ABC0.015.minus150.ForABCPaperV3.txt.gz")
+)
+CellType.selected <- readxl::read_xlsx(
+   file.path(dir.data.aux,"Nassser study selected biosamples.xlsx"),col_names = FALSE
+   ) %>% dplyr::pull(1)
+
+data.filtered <- data %>% dplyr::filter(CellType %in% CellType.selected) %>% 
+  dplyr::filter(!isSelfPromoter)  %>% 
+  dplyr::filter(class != "promoter")
+
+nasser.enhancer.gr <- data.filtered %>% makeGRangesFromDataFrame(
+  start.field = "start",
+  end.field = "end",
+  seqnames.field = "chr",
+  keep.extra.columns = TRUE
+)
+
+cpg.gr <- IlluminaHumanMethylationEPICanno.ilm10b4.hg19::Locations %>%
+  GenomicRanges::makeGRangesFromDataFrame(start.field = "pos",end.field = "pos")
+cpg.gr <- cpg.gr + 250
+cpg.gr$cpg <- rownames(IlluminaHumanMethylationEPICanno.ilm10b4.hg19::Locations)
+hits <- findOverlaps(cpg.gr,nasser.enhancer.gr) %>% as.data.frame()
+
+cpgs.ad.is.enahncer.nasser <- data.frame(
+  "Cpg" = cpg.gr[hits$queryHits,]$cpg,
+  "Cell_type" = nasser.enhancer.gr$CellType[hits$subjectHits]
+) %>% unique %>% dplyr::group_by(Cpg) %>% summarise("Cell_type" = paste(Cell_type,collapse = ";"))
+```
+
+```{r eval = F}
+load(file.path(dir.data.aux,"E073_15_coreMarks_segments.rda"))
+
+result.gr <- results %>% makeGRangesFromDataFrame(start.field = "start",end.field = "end",seqnames.field = "seqnames")
+hits <- findOverlaps(result.gr,ChmmModels.gr) %>% as.data.frame()
+hits$state <- ChmmModels.gr$state[hits$subjectHits]
+hits$cpg <- results$cpg[hits$queryHits]
+results$E073_15_coreMarks_segments_state <- hits$state[match(results$cpg,hits$cpg)]
+
+results$nasser_is_enahncer <- results$cpg %in% cpgs.ad.is.enahncer.nasser$Cpg
+results$nasser_enhancer_cell_type <- cpgs.ad.is.enahncer.nasser$Cell_type[match(results$cpg, cpgs.ad.is.enahncer.nasser$Cpg)]
+```
+
+```{r eval = F}
+write_csv(
+  results,
+  file.path(dir.results.meta, "meta_analysis_FHS9_ADNI_results_sens_annotated.csv")
+)
+```
+
+```{r eval = F}
+write_csv(
+  results %>% filter(pVal.fixed < 1e-05 & 
+               direction %in% c("++", "--") & 
+               ADNI_pValue.bacon < 0.05 & FHS9_pValue.bacon < 0.05),
+  file.path(dir.results.meta, "meta_analysis_FHS9_ADNI_sens_sig_results_annotated.csv")
+)
+```
+
+# Sensitivity analysis 2: exclude high-risk individual
+
+```{r message = F}
+# FHS exam 9
+results_fhs9 <- read_csv(
+  file.path(dir.results, "Framingham/EPIC_EXAM9/Framingham_EPIC_beta_single_cpg_cox_all_celltypes_rm_highrisk_bacon_correction.csv")
+)
+results_fhs9 <- results_fhs9 %>% 
+  mutate(study = "FHS",
+         study_id = "FHS9")
+# ADNI
+results_adni <- read_csv(
+  file.path(dir.results, "ADNI/cox/ADNI_adjust_celltypes_first_2pc_rm_highrisk_single_cpg_cox_bacon_correction.csv")
+)
+results_adni <- results_adni %>% 
+  mutate(study = "ADNI",
+         study_id = "ADNI")
+```
+
+## Meta analysis
+
+```{r echo = F, eval = F}
+# Create list for meta analysis
+results_list <- list(
+  FHS9 = results_fhs9,
+  ADNI = results_adni
+)
+# Function meta_wrapper load from meta.R
+results <- meta_wrapper(
+  results_list = results_list,
+  effect = "Estimate.bacon",
+  se = "StdErr.bacon",
+  sm = "HR"
+)
+# Save results
+write_csv(
+  results,
+  file.path(dir.results.meta,
+            "meta_analysis_FHS9_ADNI_rm_highrisk_results.csv")
+)
+```
+
+## Add anotation
+
+```{r message = F, echo=F, eval = F}
+results <-  read_csv(
+  file.path(dir.results.meta, "meta_analysis_FHS9_ADNI_rm_highrisk_results.csv")
+)
+```
+
+```{r message = F, eval = F}
+data <- readr::read_tsv(
+  file.path(dir.data.aux,"nasser_2021/AllPredictions.AvgHiC.ABC0.015.minus150.ForABCPaperV3.txt.gz")
+)
+CellType.selected <- readxl::read_xlsx(
+   file.path(dir.data.aux,"Nassser study selected biosamples.xlsx"),col_names = FALSE
+   ) %>% dplyr::pull(1)
+
+data.filtered <- data %>% dplyr::filter(CellType %in% CellType.selected) %>% 
+  dplyr::filter(!isSelfPromoter)  %>% 
+  dplyr::filter(class != "promoter")
+
+nasser.enhancer.gr <- data.filtered %>% makeGRangesFromDataFrame(
+  start.field = "start",
+  end.field = "end",
+  seqnames.field = "chr",
+  keep.extra.columns = TRUE
+)
+
+cpg.gr <- IlluminaHumanMethylationEPICanno.ilm10b4.hg19::Locations %>%
+  GenomicRanges::makeGRangesFromDataFrame(start.field = "pos",end.field = "pos")
+cpg.gr <- cpg.gr + 250
+cpg.gr$cpg <- rownames(IlluminaHumanMethylationEPICanno.ilm10b4.hg19::Locations)
+hits <- findOverlaps(cpg.gr,nasser.enhancer.gr) %>% as.data.frame()
+
+cpgs.ad.is.enahncer.nasser <- data.frame(
+  "Cpg" = cpg.gr[hits$queryHits,]$cpg,
+  "Cell_type" = nasser.enhancer.gr$CellType[hits$subjectHits]
+) %>% unique %>% dplyr::group_by(Cpg) %>% summarise("Cell_type" = paste(Cell_type,collapse = ";"))
+```
+
+```{r eval = F}
+load(file.path(dir.data.aux,"E073_15_coreMarks_segments.rda"))
+
+result.gr <- results %>% makeGRangesFromDataFrame(start.field = "start",end.field = "end",seqnames.field = "seqnames")
+hits <- findOverlaps(result.gr,ChmmModels.gr) %>% as.data.frame()
+hits$state <- ChmmModels.gr$state[hits$subjectHits]
+hits$cpg <- results$cpg[hits$queryHits]
+results$E073_15_coreMarks_segments_state <- hits$state[match(results$cpg,hits$cpg)]
+
+results$nasser_is_enahncer <- results$cpg %in% cpgs.ad.is.enahncer.nasser$Cpg
+results$nasser_enhancer_cell_type <- cpgs.ad.is.enahncer.nasser$Cell_type[match(results$cpg, cpgs.ad.is.enahncer.nasser$Cpg)]
+```
+
+```{r eval = F}
+write_csv(
+  results,
+  file.path(dir.results.meta, "meta_analysis_FHS9_ADNI_results_rm_highrisk_annotated.csv")
+)
+```
+
+```{r eval = F}
+write_csv(
+  results %>% filter(pVal.fixed < 1e-05 & 
+               direction %in% c("++", "--") & 
+               ADNI_pValue.bacon < 0.05 & FHS9_pValue.bacon < 0.05),
+  file.path(dir.results.meta, "meta_analysis_FHS9_ADNI_rm_highrisk_sig_results_annotated.csv")
+)
+```
+
+# Sensitivity analysis 3: AD in Dementia
+
+```{r message = F}
+# FHS exam 9
+results_fhs9 <- read_csv(
+  file.path(dir.results, "Framingham/EPIC_EXAM9/Framingham_EPIC_beta_single_cpg_cox_all_celltypes_AD_bacon_correction.csv")
+)
+results_fhs9 <- results_fhs9 %>% 
+  mutate(study = "FHS",
+         study_id = "FHS9")
+# ADNI
+results_adni <- read_csv(
+  file.path(dir.results, "ADNI/cox/ADNI_adjust_celltypes_first_2pc_AD_single_cpg_cox_bacon_correction.csv")
+)
+results_adni <- results_adni %>% 
+  mutate(study = "ADNI",
+         study_id = "ADNI")
+```
+
+## Meta analysis
+
+```{r echo = F, eval = F}
+# Create list for meta analysis
+results_list <- list(
+  FHS9 = results_fhs9,
+  ADNI = results_adni
+)
+# Function meta_wrapper load from meta.R
+results <- meta_wrapper(
+  results_list = results_list,
+  effect = "Estimate.bacon",
+  se = "StdErr.bacon",
+  sm = "HR"
+)
+# Save results
+write_csv(
+  results,
+  file.path(dir.results.meta,
+            "meta_analysis_FHS9_ADNI_AD_results.csv")
+)
+```
+
+## Add anotation
+
+```{r message = F, echo=F, eval = F}
+results <-  read_csv(
+  file.path(dir.results.meta, "meta_analysis_FHS9_ADNI_AD_results.csv")
+)
+```
+
+```{r message = F, eval = F}
+data <- readr::read_tsv(
+  file.path(dir.data.aux,"nasser_2021/AllPredictions.AvgHiC.ABC0.015.minus150.ForABCPaperV3.txt.gz")
+)
+CellType.selected <- readxl::read_xlsx(
+   file.path(dir.data.aux,"Nassser study selected biosamples.xlsx"),col_names = FALSE
+   ) %>% dplyr::pull(1)
+
+data.filtered <- data %>% dplyr::filter(CellType %in% CellType.selected) %>% 
+  dplyr::filter(!isSelfPromoter)  %>% 
+  dplyr::filter(class != "promoter")
+
+nasser.enhancer.gr <- data.filtered %>% makeGRangesFromDataFrame(
+  start.field = "start",
+  end.field = "end",
+  seqnames.field = "chr",
+  keep.extra.columns = TRUE
+)
+
+cpg.gr <- IlluminaHumanMethylationEPICanno.ilm10b4.hg19::Locations %>%
+  GenomicRanges::makeGRangesFromDataFrame(start.field = "pos",end.field = "pos")
+cpg.gr <- cpg.gr + 250
+cpg.gr$cpg <- rownames(IlluminaHumanMethylationEPICanno.ilm10b4.hg19::Locations)
+hits <- findOverlaps(cpg.gr,nasser.enhancer.gr) %>% as.data.frame()
+
+cpgs.ad.is.enahncer.nasser <- data.frame(
+  "Cpg" = cpg.gr[hits$queryHits,]$cpg,
+  "Cell_type" = nasser.enhancer.gr$CellType[hits$subjectHits]
+) %>% unique %>% dplyr::group_by(Cpg) %>% summarise("Cell_type" = paste(Cell_type,collapse = ";"))
+```
+
+```{r eval = F}
+load(file.path(dir.data.aux,"E073_15_coreMarks_segments.rda"))
+
+result.gr <- results %>% makeGRangesFromDataFrame(start.field = "start",end.field = "end",seqnames.field = "seqnames")
+hits <- findOverlaps(result.gr,ChmmModels.gr) %>% as.data.frame()
+hits$state <- ChmmModels.gr$state[hits$subjectHits]
+hits$cpg <- results$cpg[hits$queryHits]
+results$E073_15_coreMarks_segments_state <- hits$state[match(results$cpg,hits$cpg)]
+
+results$nasser_is_enahncer <- results$cpg %in% cpgs.ad.is.enahncer.nasser$Cpg
+results$nasser_enhancer_cell_type <- cpgs.ad.is.enahncer.nasser$Cell_type[match(results$cpg, cpgs.ad.is.enahncer.nasser$Cpg)]
+```
+
+```{r eval = F}
+write_csv(
+  results,
+  file.path(dir.results.meta, "meta_analysis_FHS9_ADNI_results_AD_annotated.csv")
+)
+```
+
+```{r eval = F}
+write_csv(
+  results %>% filter(pVal.fixed < 1e-05 & 
+               direction %in% c("++", "--") & 
+               ADNI_pValue.bacon < 0.05 & FHS9_pValue.bacon < 0.05),
+  file.path(dir.results.meta, "meta_analysis_FHS9_ADNI_AD_sig_results_annotated.csv")
+)
+```
+
+# Compare
+
+```{r}
+results1 <- read_csv(
+  file.path(dir.results.meta, "meta_analysis_FHS9_ADNI_results_sens_annotated.csv")
+)
+results2 <- read_csv(
+  file.path(dir.results.meta, "meta_analysis_FHS9_ADNI_sig_results_annotated.csv")
+)
+results3 <- read_csv(
+  file.path(dir.results.meta, "meta_analysis_FHS9_ADNI_results_rm_highrisk_annotated.csv")
+)
+results4 <- read_csv(
+  file.path(dir.results.meta, "meta_analysis_FHS9_ADNI_results_AD_annotated.csv")
+)
+```
+
+```{r}
+ls <- list(
+  Original = results2 %>% pull(cpg),
+  Sensitivity = results1 %>% pull(cpg),
+  "Remove high-risk individuals" = results3 %>% pull(cpg)
+)
+ggvenn::ggvenn(ls) + ggtitle("Sig. CpGs")
+```
+
+```{r}
+ls <- list(
+  Original = results2 %>% filter(fdr < .05) %>% pull(cpg),
+  Sensitivity = results1 %>% filter(fdr < .05) %>% pull(cpg),
+  "Remove high-risk individuals" = results3 %>% filter(fdr < 0.05) %>% pull(cpg)
+)
+ggvenn::ggvenn(ls) + ggtitle("FDR < 0.05")
+```
+
+```{r}
+sig_df <- results2 %>% filter(fdr < 0.05) 
+sig_df2 <- left_join(
+  sig_df %>% mutate(org_OS = exp(estimate)) %>%
+    dplyr::select(cpg, seqnames, start, UCSC_RefGene_Name, GREAT_annotation, org_OS,
+                  org_pVal = pVal.fixed), 
+  results1 %>% mutate(sens_OS = exp(estimate)) %>%
+    dplyr::select(cpg, sens_OS, sens_pVal = pVal.fixed), 
+)
+
+write_csv(
+  sig_df2,
+  file.path(dir.results.meta, "meta_analysis_FHS9_ADNI_44_sig_cpgs_with_sens_results.csv")
+)
+```
+
+```{r}
+sig_df2 <- left_join(
+  sig_df %>% mutate(org_OS = exp(estimate)) %>%
+    dplyr::select(cpg, seqnames, start, UCSC_RefGene_Name, GREAT_annotation, org_OS,
+                  org_pVal = pVal.fixed), 
+  results3 %>% mutate(sens_OS = exp(estimate)) %>%
+    dplyr::select(cpg, sens_OS, sens_pVal = pVal.fixed), 
+)
+
+write_csv(
+  sig_df2,
+  file.path(dir.results.meta, "meta_analysis_FHS9_ADNI_44_sig_cpgs_with_rm_highrisk_results.csv")
+)
+```
+
+```{r}
+sig_df <- sig_df %>%
+  arrange(pVal.fixed)
+meta_cpgs_previous <- readxl::read_xlsx(
+  file.path(dir.results, "../DRAFT_FIGURES_TABLES/Supp Table 15 - compare-with-previous-studies-V2.xlsx"),
+  skip = 4
+)[1:28,] %>% 
+  group_by(...1) %>% 
+  mutate(PMID = paste0(PMID, collapse = ";"))
+meta_cpgs_previous <- meta_cpgs_previous %>%
+  dplyr::select(cpg = ...1, PMID)
+sig_df <- left_join(sig_df, meta_cpgs_previous %>% unique)
+writexl::write_xlsx(
+  sig_df,
+  file.path(dir.results.meta, "meta_cpg_PMID.xlsx")
+)
+```
+```{r}
+sig_df2 <- left_join(
+  sig_df %>% mutate(org_OS = exp(estimate)) %>%
+    dplyr::select(cpg, seqnames, start, UCSC_RefGene_Name, GREAT_annotation, org_OS,
+                  org_pVal = pVal.fixed), 
+  results4 %>% mutate(sens_OS = exp(estimate)) %>%
+    dplyr::select(cpg, sens_OS, sens_pVal = pVal.fixed), 
+)
+
+write_csv(
+  sig_df2,
+  file.path(dir.results.meta, "meta_analysis_FHS9_ADNI_44_sig_cpgs_with_AD_results.csv")
+)
+```
+
 
 # Session Information
 
