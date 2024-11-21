@@ -347,15 +347,14 @@ pheno_df <- pheno_df %>%
     # Create a variable that record the dementia status at DNAm visit with following criteria
     dem_ad_status_before_visit = case_when(
       is.na(pheno_df$DEM_STATUS) ~ NA, # NAs remain NAs
-      # Dementia or AD status established (=1) and follow up years < 0 code as 1
-      (pheno_df$DEM_STATUS == 1|pheno_df$AD_STATUS == 1) & 
-        pheno_df$dem_followup_time <= 0 ~ 1 , 
-      TRUE ~ 0  # If not matched with the criteria above, code as 0
+      # Dementia or AD status established (=1) is code as 1
+      (pheno_df$DEM_STATUS == 1|pheno_df$AD_STATUS == 1) ~ 1 ,
+     TRUE ~ 0  # If not matched with the criteria above, code as 0
     )
   )
 ```
 
-### MMSE
+### MMSE  
 
 ```{r}
 # MMSE
