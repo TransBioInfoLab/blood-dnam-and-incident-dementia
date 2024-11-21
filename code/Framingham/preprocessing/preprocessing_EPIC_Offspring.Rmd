@@ -337,7 +337,7 @@ sum(is.na(pheno_df$DEM_STATUS))
 
 ```{r}
 # Calculate follow up years  
-# (days dementia occured since exam 1  - days since exam 1)/365
+# (days of dementia follow up since exam 1  - days at exam 9 since exam 1)/365
 pheno_df$dem_followup_year <- round((pheno_df$DEM_SURVDATE - pheno_df$time_since_exam1)/365)
 pheno_df$dem_followup_time <- pheno_df$DEM_SURVDATE - pheno_df$time_since_exam1
 
