@@ -106,7 +106,7 @@ pheno_df <- colData(adni.se) %>%
   as.data.frame() 
 ```
 
-## Check distribution
+## Compare distributions between stable subjects vs. progressed subjects
 
 ```{r}
 # smoking
@@ -212,7 +212,7 @@ write_csv(
 )
 ```
 
-## Include P < 0.05
+## Train using FHS data, include CpGs with P < 10^-5
 
 ```{r eval = F}
 model <- fit_glmnet(
