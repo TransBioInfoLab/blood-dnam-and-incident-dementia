@@ -77,7 +77,7 @@ We performed an out-of-sample validation using the ADNI dataset. For each subjec
 
 | File and folder                                              | Description           |
 | ------------------------------------------------------------ | --------------------- |
-| [code/MRS_analysis](https://github.com/TransBioInfoLab/blood-dnam-and-incident-dementia/blob/main/code/MRS_model) | Code for MRS analysis |
+| [code/MRS_analysis](https://github.com/TransBioInfoLab/blood-dnam-and-incident-dementia/blob/main/code/MRS_analysis) | Code for MRS analysis |
 
 ## For reproducible research
 
