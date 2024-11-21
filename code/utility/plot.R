@@ -236,69 +236,81 @@ plot_dot_mrs <- function(data, CpGs = NA, td = NA){
   
   return(p)
 }
-# =================================================================================================== 
-# KM plot
-# =================================================================================================== 
-KM_plot <- function(test_var, time_var, event_var, pheno_mat, cut = "median", conf.int = F, palette = "jco", covariates = T,  ...){
+# ===================================================================================================
+# Kaplan-Meier Plot Function
+# ===================================================================================================
+# This function generates Kaplan-Meier survival plots, optionally adjusting for covariates using a Cox model.
+KM_plot <- function(test_var, time_var, event_var, pheno_mat, cut = "median", conf.int = F, palette = "jco", covariates = T, ...) {
   
-  if(is.numeric(test_var)){
+  # Determine the group for the Kaplan-Meier analysis based on test_var
+  if (is.numeric(test_var)) {  # If test_var is numeric, group by its values
     
-    if(cut == "median"){
+    if (cut == "median") {  # Group based on median
       m <- median(test_var)
     }
     
-    if(cut == "mean"){
+    if (cut == "mean") {  # Group based on mean
       m <- mean(test_var)
     }
     
-    if(cut == "maxstat"){
-      
+    if (cut == "maxstat") {  # Use maxstat to determine the optimal cutpoint
       df <- data.frame(cluster = test_var, time = pheno_mat[[time_var]], death = pheno_mat[[event_var]])
-
       fo <- as.formula(paste0("Surv(time, death) ~ cluster"))
       m <- maxstat::maxstat.test(fo, data = df, smethod = "LogRank")$estimate
-     
     }
-      
-    gene_cut <- ifelse(test_var < m, "MRS Low", "MRS high")
     
-  } else {
+    # Assign groups based on the chosen cutpoint
+    gene_cut <- ifelse(test_var < m, "MRS Low", "MRS High")
     
-    gene_cut = test_var
-    
+  } else {  # If test_var is not numeric, use it directly as the group variable
+    gene_cut <- test_var
   }
   
+  # Create a data frame for survival analysis
   df <- data.frame(Group = factor(gene_cut), time = pheno_mat[[time_var]], death = pheno_mat[[event_var]])
-  if(covariates) {
+  
+  if (covariates) {  # If adjusting for covariates
+    
+    # Add additional covariates to the data frame
     df <- cbind(df, pheno_mat)
-    cox_mod <- coxph(Surv(time, death) ~ Group + age_at_visit + APOE4 + MMSE_bl +  PTEDUCAT + PTGENDER + DX, 
-                     data = df, x= T)
-
+    
+    # Fit a Cox proportional hazards model with covariates
+    cox_mod <- coxph(Surv(time, death) ~ Group + age_at_visit + APOE4 + MMSE_bl + PTEDUCAT + PTGENDER + DX, 
+                     data = df, x = T)
+    
+    # Generate survival curves using the fitted Cox model
     surv_fit <- survfit(cox_mod, newdata = df, type = "aalen")
-    adjsurv <- adjustedCurves::adjustedsurv(data=df,
-                            variable="Group",
-                            ev_time="time",
-                            event="death",
-                            method="direct",
-                            outcome_model=cox_mod,
-                            conf_int=conf.int,
-                            bootstrap = F)
-
+    
+    # Create adjusted survival curves directly from the Cox model
+    adjsurv <- adjustedCurves::adjustedsurv(
+      data = df,
+      variable = "Group",
+      ev_time = "time",
+      event = "death",
+      method = "direct",
+      outcome_model = cox_mod,
+      conf_int = conf.int,
+      bootstrap = F
+    )
+    
+    # Plot the adjusted survival curves
     plot(
       adjsurv,
       conf_int = conf.int,
-      #palette = palette,
       risk_table = T,
-      risk_table_stratify=TRUE,
-      risk_table_digits=0,
+      risk_table_stratify = TRUE,
+      risk_table_digits = 0,
       risk_table_warn = F,
       ...
-    ) 
-
+    )
     
-  } else {
+  } else {  # If not adjusting for covariates
+    
+    # Create a survival formula and fit a Kaplan-Meier model
     fo <- as.formula(paste0("Surv(time, death) ~ Group"))
     fit <- surv_fit(fo, data = df)
+    
+    # Plot the Kaplan-Meier survival curves using survminer
     survminer::ggsurvplot(
       fit,
       data = df,
@@ -310,6 +322,4 @@ KM_plot <- function(test_var, time_var, event_var, pheno_mat, cut = "median", co
       ...
     )
   }
-  
-  
 }
