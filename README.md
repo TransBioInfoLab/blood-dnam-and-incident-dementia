@@ -34,7 +34,7 @@ To meta-analyze individual CpG results across both the FHS and ADNI datasets, we
 | File and folder                                              | Description                                            |
 | ------------------------------------------------------------ | ------------------------------------------------------ |
 | [code/meta_analysis/meta_analysis.Rmd](https://github.com/TransBioInfoLab/blood-dnam-and-incident-dementia/blob/main/code/meta_analysis/meta_analysis.Rmd) | Code for meta-analysis (under `Main analysis` section) |
-| [result/meta_analysis_FHS9_ADNI_results_annotated.csv.zip](https://github.com/TransBioInfoLab/blood-dnam-and-incident-dementia/blob/main/result/meta_analysis_FHS9_ADNI_results_annotated.csv.zip) | Annotated meta-analysis results                        |
+| [result/meta_analysis_FHS9_ADNI_results.csv](https://github.com/TransBioInfoLab/blood-dnam-and-incident-dementia/blob/main/result/meta_analysis_FHS9_ADNI_results.csv) | Meta-analysis results                        |
 ### 3. Pathway analysis
 
 To identify biological pathways enriched with significant DNA methylation differences, we used the methylRRA function in the methylGSA R package[^1].
