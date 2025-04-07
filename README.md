@@ -1,6 +1,10 @@
 # **Blood DNA Methylation Signature for Incident Dementia: Evidence from Longitudinal Cohorts** 
 Wei Zhang, Juan I. Young, Lissette Gomez, Michael A. Schmidt, David Lukacsovich, Brian Kunkle, X. Steven Chen, Eden R. Martin, Lily Wang
 
+**Cite this article**
+
+Zhang W, Young JI, Gomez L, et al. Blood DNA methylation signature for incident dementia: Evidence from longitudinal cohorts. Alzheimer's Dement. 2025; 21:e14496. https://doi.org/10.1002/alz.14496
+
 ## Discription
 
 Alzheimer’s disease and related dementias pose a significant public health challenge, especially as the population ages. Dementia cases are often underreported, highlighting the need to identify individuals at risk early. However, distinguishing between molecular changes that precede dementia onset and those resulting from the disease is challenging with cross-sectional studies. To address this, we studied blood DNA methylation (DNAm) differences and incident dementia in two large longitudinal cohorts: the Offspring cohort of the Framingham Heart Study (FHS) and the Alzheimer’s Disease Neuroimaging Initiative (ADNI) study.
